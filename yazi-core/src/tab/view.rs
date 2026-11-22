@@ -7,6 +7,8 @@ use yazi_macro::impl_data_any;
 use yazi_scheduler::NotifyProxy;
 use yazi_shared::{scope::Scope, url::{UrlBuf, UrlLike}};
 
+use super::search::{Search, SearchHit};
+
 #[derive(Clone, Debug)]
 pub struct View {
 	pub url:     UrlBuf,
@@ -23,6 +25,7 @@ pub struct View {
 	goal:    Option<usize>,
 	top:     usize,
 	left:    usize,
+	search:  Option<Box<Search>>,
 	undo:    Vec<Change>,
 	joining: bool,
 	version: usize,
@@ -94,6 +97,7 @@ impl View {
 			goal: None,
 			top: 0,
 			left: 0,
+			search: None,
 			undo: Vec::new(),
 			joining: false,
 			version: 0,
@@ -259,14 +263,64 @@ impl View {
 		}
 		self.cursor = self.text.line_to_char(line) + offset;
 		self.column = column;
+		self.clear_search_match();
 	}
 
 	fn cursor_line(&self) -> usize { self.text.char_to_line(self.cursor) }
 
 	fn update_column(&mut self) {
+		self.clear_search_match();
 		let start = self.text.line_to_char(self.cursor_line());
 		let prefix = self.text.slice(start..self.cursor);
 		self.column = graphemes(prefix).fold(0, |col, g| col + cell_width(g, col));
+	}
+
+	pub fn start_search(&mut self, query: String, backward: bool) -> bool {
+		self.search = Search::new(query, backward).map(Box::new);
+		self.find(backward, false).unwrap_or(false)
+	}
+
+	pub fn repeat_search(&mut self, reverse: bool) -> Option<bool> {
+		self.find(self.search.as_ref()?.backward ^ reverse, true)
+	}
+
+	fn find(&mut self, backward: bool, repeat: bool) -> Option<bool> {
+		let search = self.search.as_ref()?;
+		let from = search
+			.hit
+			.as_ref()
+			.map_or_else(|| self.text.char_to_byte(self.cursor), |hit| hit.bytes.start);
+		let from = (from + usize::from(repeat && !backward)).min(self.text.len_bytes());
+		let Some(bytes) = search.find(&self.text, from, backward) else {
+			return Some(false);
+		};
+
+		let slice = self.text.slice(..);
+		// The query can start or end inside a grapheme, but the cursor and highlight use whole graphemes.
+		let (start, _) = grapheme_bounds(slice, bytes.start);
+		let (_, end) = grapheme_bounds(slice, bytes.end);
+		self.end_change();
+		self.cursor = self.text.byte_to_char(start);
+		self.goal = None;
+		self.update_column();
+
+		let line = self.cursor_line();
+		let end_column = graphemes(self.text.byte_slice(start..end))
+			.fold(self.column, |col, g| col + cell_width(g, col));
+		self.search.as_mut()?.hit =
+			Some(SearchHit { bytes, line, line_start: self.text.line_to_byte(line), end_column });
+		Some(true)
+	}
+
+	pub fn match_on_line(&self, line: usize) -> Option<Range<usize>> {
+		let hit = self.search.as_ref()?.hit.as_ref().filter(|hit| hit.line == line)?;
+		Some(hit.bytes.start - hit.line_start..hit.bytes.end - hit.line_start)
+	}
+
+	fn clear_search_match(&mut self) {
+		if let Some(search) = &mut self.search {
+			search.hit = None;
+		}
 	}
 
 	pub fn line_count(&self) -> usize { self.text.len_lines() }
@@ -293,7 +347,16 @@ impl View {
 			.top
 			.clamp(line.saturating_sub(height.saturating_sub(1)), line)
 			.min(self.line_count().saturating_sub(height.max(1)));
-		let left = self.left.clamp(self.column.saturating_sub(width.saturating_sub(1)), self.column);
+		let left = if self
+			.search
+			.as_ref()
+			.and_then(|search| search.hit.as_ref())
+			.is_some_and(|hit| hit.end_column > self.left.saturating_add(width))
+		{
+			self.column
+		} else {
+			self.left.clamp(self.column.saturating_sub(width.saturating_sub(1)), self.column)
+		};
 		(top, left)
 	}
 
@@ -356,6 +419,12 @@ fn boundary(slice: RopeSlice<'_>, offset: usize, backward: bool) -> usize {
 	} else {
 		slice.len_bytes()
 	})
+}
+
+fn grapheme_bounds(slice: RopeSlice<'_>, offset: usize) -> (usize, usize) {
+	let previous = boundary(slice, offset, true);
+	let next = boundary(slice, previous, false);
+	if next > offset && offset > previous { (previous, next) } else { (offset, offset) }
 }
 
 fn seek_boundary(

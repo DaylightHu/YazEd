@@ -23,7 +23,7 @@ impl Input {
 	pub fn padding(&self) -> Padding { Padding::new(1, 1, 1, 1) }
 
 	pub fn main_field_area(&self, mgr: &Mgr) -> Rect {
-		if let Some(area) = self.main.command_area() {
+		if let Some(area) = self.main.view_prompt_area() {
 			area.padding(Padding::left(1))
 		} else {
 			mgr.area(self.main.position).padding(self.padding())
@@ -65,23 +65,43 @@ impl Input {
 // --- InputMain
 #[derive(Default)]
 pub struct InputMain {
-	pub(super) inner:   yazi_widgets::input::Input,
-	pub name:           String,
-	pub title:          String,
-	pub position:       Position,
-	pub visible:        bool,
-	pub command_target: Option<(Id, UrlBuf)>,
+	pub(super) inner: yazi_widgets::input::Input,
+	pub name:         String,
+	pub title:        String,
+	pub position:     Position,
+	pub visible:      bool,
+	pub view_prompt:  Option<ViewPrompt>,
 }
 
 impl InputMain {
-	pub fn is_view_command(&self) -> bool { self.command_target.is_some() }
-
-	pub fn command_area(&self) -> Option<Rect> {
-		if !self.is_view_command() {
+	pub fn view_prompt_area(&self) -> Option<Rect> {
+		if self.view_prompt.is_none() {
 			return None;
 		}
 		let area = LAYOUT.get().view;
 		Some(Rect::new(area.x, area.bottom().saturating_sub(1), area.width, area.height.min(1)))
+	}
+}
+
+pub struct ViewPrompt {
+	pub tab:  Id,
+	pub url:  UrlBuf,
+	pub kind: ViewPromptKind,
+}
+
+#[derive(Clone, Copy)]
+pub enum ViewPromptKind {
+	Command,
+	Search { backward: bool },
+}
+
+impl ViewPromptKind {
+	pub const fn prefix(self) -> &'static str {
+		match self {
+			Self::Command => ":",
+			Self::Search { backward: false } => "/",
+			Self::Search { backward: true } => "?",
+		}
 	}
 }
 

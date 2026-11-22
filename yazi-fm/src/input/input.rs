@@ -43,11 +43,12 @@ impl<'a> Input<'a> {
 
 impl Widget for Input<'_> {
 	fn render(self, window: Rect, buf: &mut Buffer) {
-		if let Some(area) = self.core.input.main.command_area() {
+		if let Some(area) = self.core.input.main.view_prompt_area() {
 			let area = area.intersection(window);
 			if !area.is_empty() {
 				yazi_widgets::clear::Clear::default().render(area, buf);
-				buf.set_stringn(area.x, area.y, ":", 1, THEME.input.title.get());
+				let kind = self.core.input.main.view_prompt.as_ref().unwrap().kind;
+				buf.set_stringn(area.x, area.y, kind.prefix(), 1, THEME.input.title.get());
 				let inner = self.core.input.main_field_area(&self.core.mgr).intersection(area);
 				self.core.input.main.repos(inner);
 				self.core.input.main.render(inner, buf);

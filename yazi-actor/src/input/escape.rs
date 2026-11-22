@@ -15,7 +15,7 @@ impl Actor for Escape {
 	const NAME: &str = "escape";
 
 	fn act(cx: &mut Ctx, _: Self::Form) -> Result<Data> {
-		if cx.input.main.visible && cx.input.main.is_view_command() {
+		if cx.input.main.visible && cx.input.main.view_prompt.is_some() {
 			return act!(input:close, cx);
 		}
 
