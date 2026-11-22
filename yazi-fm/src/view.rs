@@ -155,13 +155,13 @@ impl View {
 			succ!(render!());
 		}
 
-		if action.name == "close" {
+		if matches!(action.name.as_ref(), "escape" | "close") {
 			if view.insert {
 				view.end_change();
 				view.insert = false;
 				succ!(render!());
 			}
-			if view.protect() {
+			if action.name == "escape" || view.protect() {
 				succ!();
 			}
 			return Self::close(cx);

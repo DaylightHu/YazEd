@@ -190,7 +190,7 @@ keymap = [
 [view]
 
 keymap = [
-	{ on = "<Esc>",      run = "close",     desc = "Leave insert mode or close the editor" },
+	{ on = "<Esc>",      run = "escape",    desc = "Leave insert mode" },
 	{ on = "<F6>",       run = "focus",     desc = "Focus the file list" },
 	{ on = ":",          run = "command",   desc = "Open the editor command line" },
 	{ on = "/",          run = "search",    desc = "Search the file forward" },

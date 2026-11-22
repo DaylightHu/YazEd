@@ -198,12 +198,15 @@ fn trial_editor(program: &Program, state: &Path, text: &str) -> Result<[f64; 4]>
 	let path = fixture.join("sample.txt");
 	fs::write(&path, text)?;
 
-	// Use the same save action for builds with either default keymap.
+	// Use the same save and close actions across builds with different default keymaps.
 	let config = state.join("config");
 	fs::create_dir_all(&config)?;
 	fs::write(
 		config.join("keymap.toml"),
-		b"[view]\nprepend_keymap = [{ on = \"<C-s>\", run = \"save\" }]\n",
+		b"[view]\nprepend_keymap = [\n\
+		  { on = \"<C-s>\", run = \"save\" },\n\
+		  { on = \"<F8>\", run = \"close\" },\n\
+		]\n",
 	)?;
 
 	let mut terminal = Terminal::start(&program.path, &fixture, state)?;
@@ -239,7 +242,7 @@ fn trial_editor(program: &Program, state: &Path, text: &str) -> Result<[f64; 4]>
 		return Err("Saved bytes differ from the expected editor contents".into());
 	}
 	terminal.drain(Duration::from_millis(100))?;
-	terminal.master.write_all(b"\x1b")?;
+	terminal.master.write_all(b"\x1b[19~")?;
 	terminal.drain(Duration::from_millis(150))?;
 	terminal.quit()?;
 
