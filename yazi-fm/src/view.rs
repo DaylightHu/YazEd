@@ -5,7 +5,7 @@ use ratatui_core::{buffer::Buffer, layout::Rect, style::{Modifier, Style}};
 use yazi_actor::act;
 use yazi_boot::BOOT;
 use yazi_config::{LAYOUT, THEME, popup::ConfirmCfg};
-use yazi_core::{Ctx, mgr::OpenOpt, tab::{FileStamp, View as DocumentView, cell_width, grapheme_text, graphemes}};
+use yazi_core::{Ctx, input::{ViewPrompt, ViewPromptKind}, mgr::OpenOpt, tab::{FileStamp, View as DocumentView, cell_width, grapheme_text, graphemes}};
 use yazi_macro::{emit, impl_data_any, relay, render, succ};
 use yazi_proxy::ConfirmProxy;
 use yazi_scheduler::NotifyProxy;
@@ -131,7 +131,10 @@ impl View {
 
 	pub(super) fn action(cx: &mut Ctx, mut action: ActionCow) -> Result<Data> {
 		match action.name.as_ref() {
-			"command" => return Self::command(cx),
+			"command" => return Self::show_prompt(cx, ViewPromptKind::Command),
+			"search" => {
+				return Self::show_prompt(cx, ViewPromptKind::Search { backward: action.bool("backward") });
+			}
 			"save" => return Self::save(cx, false),
 			"saved" => return Self::saved(cx, action),
 			"discard" => return Self::discard(cx),
@@ -152,13 +155,13 @@ impl View {
 			succ!(render!());
 		}
 
-		if action.name == "close" {
+		if matches!(action.name.as_ref(), "escape" | "close") {
 			if view.insert {
 				view.end_change();
 				view.insert = false;
 				succ!(render!());
 			}
-			if view.protect() {
+			if action.name == "escape" || view.protect() {
 				succ!();
 			}
 			return Self::close(cx);
@@ -166,6 +169,12 @@ impl View {
 
 		let height = LAYOUT.get().view.height.saturating_sub(1).max(1) as isize;
 		match action.name.as_ref() {
+			"repeat_search" if !view.insert => {
+				if let Some(found) = view.repeat_search(action.bool("reverse")) {
+					Self::search_result(view, found);
+				}
+				succ!();
+			}
 			"insert" if !view.saving => view.insert = true,
 			"undo" if !view.saving => {
 				let changed = view.undo();
@@ -233,37 +242,49 @@ impl View {
 		succ!(render!(tab.view.take().is_some()));
 	}
 
-	fn command(cx: &mut Ctx) -> Result<Data> {
+	fn show_prompt(cx: &mut Ctx, kind: ViewPromptKind) -> Result<Data> {
 		let tab = cx.tab_mut();
 		let Some(view) = tab.view.as_ref().filter(|view| view.focused && !view.insert) else {
 			succ!();
 		};
-		let url = view.url.clone();
-		let tab_id = tab.id;
+		let prompt = ViewPrompt { tab: tab.id, url: view.url.clone(), kind };
 		if let Some(load) = tab.view_load.take() {
 			load.cancel();
 		}
 
 		act!(input:show, cx, InputOpt::default())?;
-		cx.input.main.command_target = Some((tab_id, url));
+		cx.input.main.view_prompt = Some(prompt);
 		let area = cx.input.main_field_area(&cx.mgr);
 		cx.input.main.repos(area);
 		succ!();
 	}
 
-	pub(super) fn command_submit(cx: &mut Ctx, action: ActionCow) -> Result<Data> {
-		let Some((tab_id, url)) = cx.input.main.command_target.take() else { succ!() };
-		let command = cx.input.main.value().to_owned();
+	pub(super) fn submit_prompt(cx: &mut Ctx, action: ActionCow) -> Result<Data> {
+		let Some(prompt) = cx.input.main.view_prompt.take() else { succ!() };
+		let text = cx.input.main.value().to_owned();
 		act!(input:close, cx, action)?;
 
-		let Some(view) = cx.tab().view.as_ref().filter(|view| view.url == url && view.focused) else {
+		if cx.tab != cx.mgr.tabs.cursor || cx.tab().id != prompt.tab {
+			succ!();
+		}
+		let Some(view) = cx
+			.tab_mut()
+			.view
+			.as_mut()
+			.filter(|view| view.url == prompt.url && view.focused && !view.insert)
+		else {
 			succ!();
 		};
-		if cx.tab != cx.mgr.tabs.cursor || cx.tab().id != tab_id || view.insert {
+
+		if let ViewPromptKind::Search { backward } = prompt.kind {
+			if !text.is_empty() {
+				let found = view.start_search(text, backward);
+				Self::search_result(view, found);
+			}
 			succ!();
 		}
 
-		match command.trim() {
+		match text.trim() {
 			"" => succ!(),
 			"w" => Self::save(cx, false),
 			"wq" => Self::save(cx, true),
@@ -280,6 +301,15 @@ impl View {
 				Self::close(cx)
 			}
 			other => succ!(NotifyProxy::push_warn("Unknown editor command", format!(":{other}"))),
+		}
+	}
+
+	fn search_result(view: &mut DocumentView, found: bool) {
+		if found {
+			Self::redraw(view, true);
+		} else {
+			NotifyProxy::push_warn("No match", "The text was not found in this file.");
+			render!();
 		}
 	}
 
@@ -470,14 +500,28 @@ impl View {
 		let (top, left) = view.viewport(width, area.height as usize - 1);
 		for (y, row) in (area.y..status_y).zip(top..view.line_count()) {
 			let mut col = 0;
+			let mut byte = 0;
+			let highlight = view.match_on_line(row);
 			for g in graphemes(view.line(row)) {
 				let start = col;
 				col += cell_width(g, col);
 				if col > left + width {
 					break;
 				}
-				if start >= left && col > start && g.char(0) != '\t' {
-					buf.set_stringn(area.x + (start - left) as u16, y, grapheme_text(g), col - start, style);
+				let matched = highlight.as_ref().is_some_and(|range| {
+					let start = byte;
+					byte += g.len_bytes();
+					start < range.end && byte > range.start
+				});
+				if start < left || col == start {
+					continue;
+				}
+				let x = area.x + (start - left) as u16;
+				if g.char(0) != '\t' {
+					let cell_style = if matched { THEME.mgr.find_keyword.get().0 } else { style };
+					buf.set_stringn(x, y, grapheme_text(g), col - start, cell_style);
+				} else if matched {
+					buf.set_style(Rect::new(x, y, (col - start) as u16, 1), THEME.mgr.find_keyword.get());
 				}
 			}
 		}

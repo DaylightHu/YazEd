@@ -47,7 +47,7 @@ impl Core {
 				InputGuard::Main(_) => self.input.main_field_area(&self.mgr),
 				InputGuard::Alt(_) => self.mgr.area(self.input.position()?),
 			};
-			if self.input.main.visible && self.input.main.is_view_command() {
+			if self.input.main.visible && self.input.main.view_prompt.is_some() {
 				if area.is_empty() {
 					return None;
 				}

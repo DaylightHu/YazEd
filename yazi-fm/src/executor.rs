@@ -259,10 +259,12 @@ impl<'a> Executor<'a> {
 	}
 
 	fn input(&mut self, action: ActionCow) -> Result<Data> {
-		if action.name == "close" && action.bool("submit") && self.app.core.input.main.is_view_command()
+		if action.name == "close"
+			&& action.bool("submit")
+			&& self.app.core.input.main.view_prompt.is_some()
 		{
 			let cx = &mut Ctx::new(&action, &mut self.app.core)?;
-			return View::command_submit(cx, action);
+			return View::submit_prompt(cx, action);
 		}
 
 		let mut guard;
