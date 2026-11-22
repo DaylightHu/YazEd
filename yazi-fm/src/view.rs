@@ -5,7 +5,7 @@ use ratatui_core::{buffer::Buffer, layout::Rect, style::{Modifier, Style}};
 use yazi_actor::act;
 use yazi_boot::BOOT;
 use yazi_config::{LAYOUT, THEME, popup::ConfirmCfg};
-use yazi_core::{Ctx, input::{ViewPrompt, ViewPromptKind}, mgr::OpenOpt, tab::{FileStamp, View as DocumentView, cell_width, grapheme_text, graphemes}};
+use yazi_core::{Ctx, input::{ViewPrompt, ViewPromptKind}, mgr::OpenOpt, tab::{FileStamp, View as DocumentView, ViewSelectionOp, ViewSelectionSpan, cell_width, grapheme_text, graphemes}};
 use yazi_macro::{emit, impl_data_any, relay, render, succ};
 use yazi_proxy::ConfirmProxy;
 use yazi_scheduler::NotifyProxy;
@@ -148,7 +148,7 @@ impl View {
 			_ => {}
 		}
 
-		let Some(view) = &mut cx.tab_mut().view else { succ!() };
+		let Some(view) = &mut cx.core.mgr.tabs[cx.tab].view else { succ!() };
 		if action.name == "focus" {
 			view.end_change();
 			view.focused = !view.focused;
@@ -156,6 +156,9 @@ impl View {
 		}
 
 		if matches!(action.name.as_ref(), "escape" | "close") {
+			if view.cancel_visual() {
+				succ!(render!());
+			}
 			if view.insert {
 				view.end_change();
 				view.insert = false;
@@ -175,8 +178,33 @@ impl View {
 				}
 				succ!();
 			}
-			"insert" if !view.saving => view.insert = true,
-			"undo" if !view.saving => {
+			"visual" if !view.saving && !view.insert => view.toggle_visual(action.bool("linewise")),
+			"visual_swap" => {
+				let changed = view.swap_visual_end();
+				succ!(Self::redraw(view, changed));
+			}
+			"visual_yank" | "visual_change" | "visual_delete" | "delete"
+				if !view.saving && view.visual_mode().is_some() =>
+			{
+				let op = match action.name.as_ref() {
+					"visual_yank" => ViewSelectionOp::Yank,
+					"visual_change" => ViewSelectionOp::Change,
+					_ => ViewSelectionOp::Delete,
+				};
+				if let Some(register) = view.finish_visual(op) {
+					cx.core.view_register = Some(register);
+				}
+			}
+			"put" if !view.saving && !view.insert && view.visual_mode().is_none() => {
+				let changed = cx
+					.core
+					.view_register
+					.as_ref()
+					.is_some_and(|register| view.put_register(register, action.bool("before")));
+				succ!(Self::redraw(view, changed));
+			}
+			"insert" if !view.saving && view.visual_mode().is_none() => view.insert = true,
+			"undo" if !view.saving && view.visual_mode().is_none() => {
 				let changed = view.undo();
 				succ!(Self::redraw(view, changed));
 			}
@@ -484,6 +512,9 @@ impl View {
 			(" SAVING ", THEME.status.progress_label.get().0)
 		} else if view.insert {
 			(" -- INSERT -- ", THEME.mode.insert_main.get().0)
+		} else if let Some(linewise) = view.visual_mode() {
+			let label = if linewise { " VISUAL LINE " } else { " VISUAL " };
+			(label, THEME.mode.select_main.get().0)
 		} else {
 			(" NORMAL ", THEME.mode.normal_main.get().0)
 		};
@@ -501,12 +532,26 @@ impl View {
 		let (top, left) = view.viewport(width, height);
 		let rows = top..(top + height).min(view.line_count());
 		view.prepare_syntax(rows.clone(), || emit!(Call(relay!(app:view_syntax_ready))));
+		let visual = view.visual_span();
+		let visual_style = THEME.input.selected.get().0;
 		for (y, row) in (area.y..status_y).zip(rows) {
 			let mut col = 0;
 			let mut byte = 0;
 			let highlight = view.match_on_line(row);
 			let mut syntax = view.syntax_styles(row).iter().peekable();
-			for g in graphemes(view.line(row)) {
+			let (whole_line, selection) = match &visual {
+				Some(ViewSelectionSpan::Lines(lines)) => (lines.contains(&row), None),
+				Some(ViewSelectionSpan::Bytes(bytes)) => {
+					let start = view.line_byte(row);
+					(false, Some(bytes.start.saturating_sub(start)..bytes.end.saturating_sub(start)))
+				}
+				None => (false, None),
+			};
+			let line = view.line(row);
+			if whole_line {
+				buf.set_style(Rect::new(area.x, y, area.width, 1), visual_style);
+			}
+			for g in graphemes(line) {
 				let start = col;
 				let start_byte = byte;
 				col += cell_width(g, col);
@@ -526,6 +571,11 @@ impl View {
 				if highlight.as_ref().is_some_and(|range| start_byte < range.end && byte > range.start) {
 					cell_style = cell_style.patch(THEME.mgr.find_keyword.get().0);
 				}
+				if whole_line
+					|| selection.as_ref().is_some_and(|range| start_byte < range.end && byte > range.start)
+				{
+					cell_style = cell_style.patch(visual_style);
+				}
 
 				let x = area.x + (start - left) as u16;
 				if g.char(0) != '\t' {
@@ -533,6 +583,12 @@ impl View {
 				} else if cell_style != style {
 					buf.set_style(Rect::new(x, y, (col - start) as u16, 1), cell_style);
 				}
+			}
+			if (left..left + width).contains(&col)
+				&& selection.as_ref().is_some_and(|range| range.contains(&line.len_bytes()))
+			{
+				// Show an inclusive selection of a line ending, even on an empty row.
+				buf.set_style(Rect::new(area.x + (col - left) as u16, y, 1, 1), visual_style);
 			}
 		}
 	}

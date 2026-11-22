@@ -5,7 +5,7 @@ use yazi_shim::ratatui::Padable;
 use yazi_tty::sequence::SetCursorStyle;
 use yazi_tui::Raterm;
 
-use crate::{cmp::Cmp, confirm::Confirm, help::Help, input::{Input, InputGuard}, mgr::Mgr, notify::Notify, pick::Pick, tab::Tab, tasks::Tasks, which::Which};
+use crate::{cmp::Cmp, confirm::Confirm, help::Help, input::{Input, InputGuard}, mgr::Mgr, notify::Notify, pick::Pick, tab::{Tab, ViewRegister}, tasks::Tasks, which::Which};
 
 pub struct Core {
 	pub mgr:     Mgr,
@@ -18,6 +18,8 @@ pub struct Core {
 	pub which:   Which,
 	pub notify:  Notify,
 	pub term:    Option<Raterm>,
+
+	pub view_register: Option<ViewRegister>,
 }
 
 impl Core {
@@ -33,6 +35,8 @@ impl Core {
 			which:   Default::default(),
 			notify:  Default::default(),
 			term:    Some(term),
+
+			view_register: None,
 		}
 	}
 
