@@ -1,0 +1,36 @@
+use mlua::{FromLua, IntoLua, Lua, Value};
+use serde::Serialize;
+use yazi_shared::data::Data;
+use yazi_shim::CompactString;
+
+use super::Ember;
+
+#[derive(Clone, Debug)]
+pub struct EmberCustom {
+	pub(crate) kind: CompactString,
+	pub data:        Data,
+}
+
+impl EmberCustom {
+	pub(crate) fn from_str(kind: &str, data: &str) -> anyhow::Result<Ember<'static>> {
+		Ok(Self { kind: kind.into(), data: serde_json::from_str(data)? }.into())
+	}
+
+	pub(crate) fn from_lua(lua: &Lua, kind: &str, data: Value) -> mlua::Result<Ember<'static>> {
+		Ok(Self { kind: kind.into(), data: Data::from_lua(data, lua)? }.into())
+	}
+}
+
+impl From<EmberCustom> for Ember<'_> {
+	fn from(value: EmberCustom) -> Self { Self::Custom(value) }
+}
+
+impl IntoLua for EmberCustom {
+	fn into_lua(self, lua: &Lua) -> mlua::Result<Value> { self.data.into_lua(lua) }
+}
+
+impl Serialize for EmberCustom {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serde::Serialize::serialize(&self.data, serializer)
+	}
+}

@@ -1,0 +1,53 @@
+use mlua::{ExternalResult, Function, Lua, LuaString, Value};
+use yazi_binding::runtime;
+use yazi_dds::ember::Ember;
+use yazi_shared::id::Id;
+
+pub(crate) struct Pubsub;
+
+impl Pubsub {
+	pub(super) fn r#pub(lua: &Lua) -> mlua::Result<Function> {
+		lua.create_function(|lua, (kind, value): (LuaString, Value)| {
+			yazi_dds::Pubsub::r#pub(Ember::from_lua(lua, &kind.to_str()?, value)?).into_lua_err()
+		})
+	}
+
+	pub(super) fn pub_to(lua: &Lua) -> mlua::Result<Function> {
+		lua.create_function(|lua, (receiver, kind, value): (Id, LuaString, Value)| {
+			yazi_dds::Pubsub::pub_to(receiver, Ember::from_lua(lua, &kind.to_str()?, value)?)
+				.into_lua_err()
+		})
+	}
+
+	pub(super) fn sub(lua: &Lua) -> mlua::Result<Function> {
+		lua.create_function(|lua, (kind, f): (LuaString, Function)| {
+			let rt = runtime!(lua)?;
+			yazi_dds::Pubsub::sub(&kind.to_str()?, rt.name()?, f)
+				.ok_or("`sub()` called twice")
+				.into_lua_err()
+		})
+	}
+
+	pub(super) fn sub_remote(lua: &Lua) -> mlua::Result<Function> {
+		lua.create_function(|lua, (kind, f): (LuaString, Function)| {
+			let rt = runtime!(lua)?;
+			yazi_dds::Pubsub::sub_remote(&kind.to_str()?, rt.name()?, f)
+				.ok_or("`sub_remote()` called twice")
+				.into_lua_err()
+		})
+	}
+
+	pub(super) fn unsub(lua: &Lua) -> mlua::Result<Function> {
+		lua.create_function(|lua, kind: LuaString| {
+			let rt = runtime!(lua)?;
+			Ok(yazi_dds::Pubsub::unsub(&kind.to_str()?, rt.name()?))
+		})
+	}
+
+	pub(super) fn unsub_remote(lua: &Lua) -> mlua::Result<Function> {
+		lua.create_function(|lua, kind: LuaString| {
+			let rt = runtime!(lua)?;
+			Ok(yazi_dds::Pubsub::unsub_remote(&kind.to_str()?, rt.name()?))
+		})
+	}
+}

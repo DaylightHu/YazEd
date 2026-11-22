@@ -1,0 +1,144 @@
+use std::io;
+
+use yazi_fs::{engine::{Attrs, Capabilities, Engine, Transit}, file::File, remover::Removal, stat::Stat};
+use yazi_shared::{path::{DynPath, PathBufDyn}, strand::AsStrand, url::{AsUrl, Url, UrlBuf, UrlCow}};
+
+pub(super) enum Engines<'a> {
+	Local(yazi_fs::engine::local::Local<'a>),
+	Lua(super::lua::Lua<'a>),
+	Sftp(super::sftp::Sftp<'a>),
+}
+
+impl AsUrl for Engines<'_> {
+	fn as_url(&self) -> Url<'_> {
+		match self {
+			Self::Local(p) => p.as_url(),
+			Self::Lua(p) => p.as_url(),
+			Self::Sftp(p) => p.as_url(),
+		}
+	}
+}
+
+impl<'a> Engine for Engines<'a> {
+	type Demand = super::Demand;
+	type File = super::RwFile;
+	type Me<'b> = Engines<'b>;
+	type ReadDir = super::ReadDir;
+	type UrlCow = UrlCow<'a>;
+
+	async fn absolute(&self) -> io::Result<Self::UrlCow> { dispatch!(self, absolute) }
+
+	async fn canonicalize(&self) -> io::Result<UrlBuf> { dispatch!(self, canonicalize) }
+
+	async fn capabilities(&self) -> io::Result<Capabilities> {
+		match self {
+			Self::Local(p) => p.capabilities().await,
+			Self::Lua(p) => p.capabilities().await,
+			Self::Sftp(p) => p.capabilities().await,
+		}
+	}
+
+	async fn casefold(&self) -> io::Result<UrlBuf> { dispatch!(self, casefold) }
+
+	async fn copy_to(&self, to: Url<'_>, attrs: Attrs) -> io::Result<Transit> {
+		dispatch!(self, copy_to, to, attrs)
+	}
+
+	async fn copy_from(&self, from: Url<'_>, attrs: Attrs) -> io::Result<Transit> {
+		dispatch!(self, copy_from, from, attrs)
+	}
+
+	async fn create_dir(&self) -> io::Result<()> { dispatch!(self, create_dir) }
+
+	async fn create_dir_all(&self) -> io::Result<()> { dispatch!(self, create_dir_all) }
+
+	async fn create_file(&self) -> io::Result<Self::File> { dispatch!(self, create_file) }
+
+	async fn create_file_new(&self) -> io::Result<Self::File> { dispatch!(self, create_file_new) }
+
+	async fn file(&self) -> io::Result<File> { dispatch!(self, file) }
+
+	async fn hard_link<P>(&self, to: P) -> io::Result<()>
+	where
+		P: DynPath,
+	{
+		dispatch!(self, hard_link, to)
+	}
+
+	async fn lstat(&self) -> io::Result<Stat> { dispatch!(self, lstat) }
+
+	async fn new<'b>(url: Url<'b>) -> io::Result<Self::Me<'b>> {
+		use yazi_shared::auth::AuthKind as K;
+
+		Ok(match url.kind() {
+			K::Regular => Self::Me::Local(yazi_fs::engine::local::Local::new(url).await?),
+			K::Sftp => Self::Me::Sftp(super::sftp::Sftp::new(url).await?),
+			K::Mount | K::Hub | K::Scope | K::View => Self::Me::Lua(super::lua::Lua::new(url).await?),
+		})
+	}
+
+	async fn read_dir(self) -> io::Result<Self::ReadDir> { dispatch!(self, read_dir) }
+
+	async fn read_link(&self) -> io::Result<PathBufDyn> { dispatch!(self, read_link) }
+
+	async fn reroute(&self) -> io::Result<File> { dispatch!(self, reroute) }
+
+	async fn revalidate(&self, file: File) -> io::Result<Option<File>> {
+		match self {
+			Self::Local(p) => p.revalidate(file).await,
+			Self::Lua(p) if p.handles(|c| c.revalidate).await? => p.revalidate(file).await,
+			Self::Lua(p) => physical!(p, revalidate, File { url: file.url.into_physical(), ..file }),
+			Self::Sftp(p) => p.revalidate(file).await,
+		}
+	}
+
+	async fn remove_dir(&self) -> io::Result<()> { dispatch!(self, remove_dir) }
+
+	async fn remove_dir_all(&self) -> io::Result<Removal> { dispatch!(self, remove_dir_all) }
+
+	async fn remove_dir_clean(&self) -> io::Result<()> { dispatch!(self, remove_dir_clean) }
+
+	async fn remove_file(&self) -> io::Result<()> { dispatch!(self, remove_file) }
+
+	async fn rename<P>(&self, to: P) -> io::Result<()>
+	where
+		P: DynPath,
+	{
+		dispatch!(self, rename, to)
+	}
+
+	async fn set_attrs(&self, attrs: Attrs) -> io::Result<()> { dispatch!(self, set_attrs, attrs) }
+
+	async fn stat(&self) -> io::Result<Stat> { dispatch!(self, stat) }
+
+	async fn symlink<S, F>(&self, original: S, is_dir: F) -> io::Result<()>
+	where
+		S: AsStrand,
+		F: AsyncFnOnce() -> io::Result<bool>,
+	{
+		dispatch!(self, symlink, original, is_dir)
+	}
+
+	async fn symlink_dir<S>(&self, original: S) -> io::Result<()>
+	where
+		S: AsStrand,
+	{
+		dispatch!(self, symlink_dir, original)
+	}
+
+	async fn symlink_file<S>(&self, original: S) -> io::Result<()>
+	where
+		S: AsStrand,
+	{
+		dispatch!(self, symlink_file, original)
+	}
+
+	async fn trash(&self) -> io::Result<()> { dispatch!(self, trash) }
+
+	async fn write<B>(&self, contents: B) -> io::Result<()>
+	where
+		B: AsRef<[u8]>,
+	{
+		dispatch!(self, write, contents)
+	}
+}

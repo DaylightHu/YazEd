@@ -1,0 +1,152 @@
+use std::{hash::BuildHasher, path::{Path, PathBuf}};
+
+use hashbrown::{HashMap, hash_map::EntryRef};
+use yazi_shim::indexmap::{IndexMap, map::RawEntryApiV1};
+
+use crate::{auth::AuthArc, loc::Loc, url::{Url, UrlBuf, UrlBufCov, UrlCov, UrlCow}};
+
+// --- AsUrl
+pub trait AsUrl {
+	fn as_url(&self) -> Url<'_>;
+}
+
+impl AsUrl for Path {
+	#[inline]
+	fn as_url(&self) -> Url<'_> { Url::Os { loc: Loc::bare(self), auth: &AuthArc::DEFAULT } }
+}
+
+impl AsUrl for PathBuf {
+	#[inline]
+	fn as_url(&self) -> Url<'_> { self.as_path().as_url() }
+}
+
+impl AsUrl for Url<'_> {
+	#[inline]
+	fn as_url(&self) -> Url<'_> { *self }
+}
+
+impl AsUrl for UrlBuf {
+	#[inline]
+	fn as_url(&self) -> Url<'_> {
+		match self {
+			Self::Os { loc, auth } => Url::Os { loc: loc.as_loc(), auth },
+			Self::Unix { loc, auth } => Url::Unix { loc: loc.as_loc(), auth },
+		}
+	}
+}
+
+impl AsUrl for UrlCow<'_> {
+	fn as_url(&self) -> Url<'_> {
+		match self {
+			Self::Os { loc, auth } => Url::Os { loc: loc.as_loc(), auth },
+			Self::Unix { loc, auth } => Url::Unix { loc: loc.as_loc(), auth },
+		}
+	}
+}
+
+impl AsUrl for super::Components<'_> {
+	fn as_url(&self) -> Url<'_> { self.url() }
+}
+
+impl<T: AsUrl + ?Sized> AsUrl for &T {
+	#[inline]
+	fn as_url(&self) -> Url<'_> { (**self).as_url() }
+}
+
+impl<T: AsUrl + ?Sized> AsUrl for &mut T {
+	#[inline]
+	fn as_url(&self) -> Url<'_> { (**self).as_url() }
+}
+
+impl<'a, T> From<&'a T> for Url<'a>
+where
+	T: AsUrl + ?Sized,
+{
+	fn from(value: &'a T) -> Self { value.as_url() }
+}
+
+impl<'a, T> From<&'a mut T> for Url<'a>
+where
+	T: AsUrl + ?Sized,
+{
+	fn from(value: &'a mut T) -> Self { (*value).as_url() }
+}
+
+// --- UrlMapExt
+pub trait UrlMapExt<V> {
+	fn get_or_insert_default<U>(&mut self, url: U) -> &mut V
+	where
+		U: AsUrl,
+		V: Default;
+
+	fn get_or_insert_with<U, F>(&mut self, url: U, default: F) -> &mut V
+	where
+		U: AsUrl,
+		F: FnOnce(U) -> V;
+}
+
+impl<V, S> UrlMapExt<V> for HashMap<UrlBuf, V, S>
+where
+	S: BuildHasher,
+{
+	fn get_or_insert_default<U>(&mut self, url: U) -> &mut V
+	where
+		U: AsUrl,
+		V: Default,
+	{
+		self.get_or_insert_with(url, |_| Default::default())
+	}
+
+	fn get_or_insert_with<U, F>(&mut self, url: U, default: F) -> &mut V
+	where
+		U: AsUrl,
+		F: FnOnce(U) -> V,
+	{
+		let entry = self.raw_entry_mut().from_key(&url.as_url());
+		entry.or_insert_with(|| (url.as_url().into(), default(url))).1
+	}
+}
+
+impl<V, S> UrlMapExt<V> for IndexMap<UrlBuf, V, S>
+where
+	S: BuildHasher,
+{
+	fn get_or_insert_default<U>(&mut self, url: U) -> &mut V
+	where
+		U: AsUrl,
+		V: Default,
+	{
+		self.get_or_insert_with(url, |_| Default::default())
+	}
+
+	fn get_or_insert_with<U, F>(&mut self, url: U, default: F) -> &mut V
+	where
+		U: AsUrl,
+		F: FnOnce(U) -> V,
+	{
+		let entry = self.raw_entry_mut_v1().from_key(&url.as_url());
+		entry.or_insert_with(|| (url.as_url().into(), default(url))).1
+	}
+}
+
+// --- UrlCovMapExt
+pub trait UrlCovMapExt<V> {
+	fn get_or_insert_default(&mut self, url: UrlCov<'_>) -> &mut V
+	where
+		V: Default;
+}
+
+impl<V, S> UrlCovMapExt<V> for HashMap<UrlBufCov, V, S>
+where
+	S: BuildHasher,
+{
+	fn get_or_insert_default(&mut self, url: UrlCov<'_>) -> &mut V
+	where
+		V: Default,
+	{
+		match self.entry_ref(&url) {
+			EntryRef::Occupied(oe) => oe.into_mut(),
+			EntryRef::Vacant(ve) => ve.insert_with_key(url.into(), Default::default()),
+		}
+	}
+}

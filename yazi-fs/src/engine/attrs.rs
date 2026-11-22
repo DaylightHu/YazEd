@@ -1,0 +1,93 @@
+use std::time::Duration;
+
+use mlua::{IntoLua, Lua, Value};
+use yazi_binding::time::Time;
+
+use crate::stat::{Stat, StatMode};
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Attrs {
+	pub mode:  Option<StatMode>,
+	pub atime: Option<Time>,
+	pub btime: Option<Time>,
+	pub mtime: Option<Time>,
+}
+
+impl From<Stat> for Attrs {
+	fn from(value: Stat) -> Self {
+		Self { mode: Some(value.mode), atime: value.atime, btime: value.btime, mtime: value.mtime }
+	}
+}
+
+impl TryFrom<Attrs> for std::fs::FileTimes {
+	type Error = ();
+
+	fn try_from(value: Attrs) -> Result<Self, Self::Error> {
+		if !value.has_times() {
+			return Err(());
+		}
+
+		let mut t = Self::new();
+		if let Some(atime) = value.atime {
+			t = t.set_accessed(atime.into());
+		}
+
+		#[cfg(target_os = "macos")]
+		if let Some(btime) = value.btime {
+			use std::os::macos::fs::FileTimesExt;
+			t = t.set_created(btime.into());
+		}
+
+		#[cfg(windows)]
+		if let Some(btime) = value.btime {
+			use std::os::windows::fs::FileTimesExt;
+			t = t.set_created(btime.into());
+		}
+
+		if let Some(mtime) = value.mtime {
+			t = t.set_modified(mtime.into());
+		}
+
+		Ok(t)
+	}
+}
+
+impl TryFrom<Attrs> for std::fs::Permissions {
+	type Error = ();
+
+	fn try_from(_value: Attrs) -> Result<Self, Self::Error> {
+		#[cfg(unix)]
+		if let Some(mode) = _value.mode {
+			return Ok(mode.into());
+		}
+
+		Err(())
+	}
+}
+
+impl Attrs {
+	pub fn mode(mode: StatMode) -> Self { Self { mode: Some(mode), ..Default::default() } }
+
+	fn has_times(self) -> bool {
+		self.atime.is_some()
+			|| self.mtime.is_some()
+			|| (self.btime.is_some() && cfg!(any(target_os = "macos", target_os = "windows")))
+	}
+
+	pub fn atime_dur(self) -> Option<Duration> { self.atime?.try_into().ok() }
+
+	pub fn mtime_dur(self) -> Option<Duration> { self.mtime?.try_into().ok() }
+}
+
+impl IntoLua for Attrs {
+	fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+		lua
+			.create_table_from([
+				("mode", self.mode.map(|m| m.bits()).into_lua(lua)?),
+				("atime", self.atime.into_lua(lua)?),
+				("btime", self.btime.into_lua(lua)?),
+				("mtime", self.mtime.into_lua(lua)?),
+			])?
+			.into_lua(lua)
+	}
+}

@@ -1,0 +1,251 @@
+use std::{io, pin::pin};
+
+use tokio::io::{AsyncRead, AsyncSeek, AsyncWrite, AsyncWriteExt};
+use yazi_shared::{path::{DynPath, PathBufDyn}, strand::{AsStrand, StrandCow}, url::{AsUrl, Url, UrlBuf}};
+
+use crate::{engine::{Attrs, Capabilities, Transit}, file::{File, FileExtra}, remover::Removal, stat::{Stat, StatType}};
+
+pub trait Engine: Sized + AsUrl {
+	type File: AsyncRead + AsyncSeek + AsyncWrite;
+	type Demand: FileBuilder<File = Self::File>;
+	type ReadDir: DirReader + 'static;
+	type UrlCow;
+	type Me<'a>: Engine;
+
+	fn absolute(&self) -> impl Future<Output = io::Result<Self::UrlCow>>;
+
+	fn canonicalize(&self) -> impl Future<Output = io::Result<UrlBuf>>;
+
+	fn capabilities(&self) -> impl Future<Output = io::Result<Capabilities>>;
+
+	fn casefold(&self) -> impl Future<Output = io::Result<UrlBuf>>;
+
+	fn copy_to(&self, to: Url<'_>, attrs: Attrs) -> impl Future<Output = io::Result<Transit>>;
+
+	fn copy_from(&self, _from: Url<'_>, _attrs: Attrs) -> impl Future<Output = io::Result<Transit>> {
+		async { Ok(Transit::unsupported()) }
+	}
+
+	fn create_dir(&self) -> impl Future<Output = io::Result<()>>;
+
+	fn create_dir_all(&self) -> impl Future<Output = io::Result<()>> { self.create_dir_all_default() }
+
+	fn create_dir_all_default(&self) -> impl Future<Output = io::Result<()>> {
+		async move {
+			let mut url = self.as_url();
+			if url.loc().is_empty() {
+				return Ok(());
+			}
+
+			let mut stack = Vec::new();
+			loop {
+				match Self::new(url).await?.create_dir().await {
+					Ok(()) => break,
+					Err(e) if e.kind() == io::ErrorKind::NotFound => {
+						if let Some(parent) = url.parent() {
+							stack.push(url);
+							url = parent;
+						} else {
+							return Err(io::Error::other("failed to create whole tree"));
+						}
+					}
+					Err(_) if Self::new(url).await?.stat().await.is_ok_and(|m| m.is_dir()) => break,
+					Err(e) => return Err(e),
+				}
+			}
+
+			while let Some(u) = stack.pop() {
+				match Self::new(u).await?.create_dir().await {
+					Ok(()) => {}
+					Err(_) if Self::new(u).await?.stat().await.is_ok_and(|m| m.is_dir()) => {}
+					Err(e) => return Err(e),
+				}
+			}
+
+			Ok(())
+		}
+	}
+
+	fn create_file(&self) -> impl Future<Output = io::Result<Self::File>>;
+
+	fn create_file_new(&self) -> impl Future<Output = io::Result<Self::File>>;
+
+	fn demand(&self) -> Self::Demand { Self::Demand::default() }
+
+	fn file(&self) -> impl Future<Output = io::Result<File>> {
+		async move {
+			let lstat = self.lstat().await?;
+
+			let (mut followed, mut link_to) = (None, None);
+			if lstat.is_link() {
+				followed = self.stat().await.ok();
+				link_to = self.read_link().await.ok();
+			}
+
+			Ok(File {
+				url:   self.as_url().to_owned(),
+				stat:  lstat.follow(followed),
+				extra: FileExtra::new(lstat, link_to, None),
+			})
+		}
+	}
+
+	fn hard_link<P>(&self, to: P) -> impl Future<Output = io::Result<()>>
+	where
+		P: DynPath;
+
+	fn lstat(&self) -> impl Future<Output = io::Result<Stat>>;
+
+	fn new<'a>(url: Url<'a>) -> impl Future<Output = io::Result<Self::Me<'a>>>;
+
+	fn open(&self) -> impl Future<Output = io::Result<Self::File>> {
+		async move { self.demand().read(true).open(self.as_url()).await }
+	}
+
+	fn read_dir(self) -> impl Future<Output = io::Result<Self::ReadDir>>;
+
+	fn read_link(&self) -> impl Future<Output = io::Result<PathBufDyn>>;
+
+	fn reroute(&self) -> impl Future<Output = io::Result<File>> {
+		async { Err(io::ErrorKind::Unsupported.into()) }
+	}
+
+	fn revalidate(&self, file: File) -> impl Future<Output = io::Result<Option<File>>> {
+		async move {
+			let new = self.file().await?;
+			if new.hits(&file) { Ok(None) } else { Ok(Some(new)) }
+		}
+	}
+
+	fn remove_dir(&self) -> impl Future<Output = io::Result<()>>;
+
+	fn remove_dir_all(&self) -> impl Future<Output = io::Result<Removal>>;
+
+	fn remove_dir_clean(&self) -> impl Future<Output = io::Result<()>> {
+		let root = self.as_url().to_owned();
+
+		async move {
+			let mut stack = vec![(root, false)];
+			let mut result = Ok(());
+
+			while let Some((dir, visited)) = stack.pop() {
+				let Ok(engine) = Self::new(dir.as_url()).await else { continue };
+
+				if visited {
+					result = engine.remove_dir().await;
+					continue;
+				}
+
+				if !engine.lstat().await.is_ok_and(|c| c.is_dir() && !c.is_indirect()) {
+					continue;
+				}
+
+				let Ok(mut it) = engine.read_dir().await else { continue };
+				stack.push((dir, true));
+
+				while let Ok(Some(dent)) = it.next().await {
+					if dent.lstat().await.is_ok_and(|c| c.is_dir() && !c.is_indirect()) {
+						stack.push((dent.url(), false));
+					}
+				}
+			}
+			result
+		}
+	}
+
+	fn remove_file(&self) -> impl Future<Output = io::Result<()>>;
+
+	fn rename<P>(&self, to: P) -> impl Future<Output = io::Result<()>>
+	where
+		P: DynPath;
+
+	fn set_attrs(&self, attrs: Attrs) -> impl Future<Output = io::Result<()>>;
+
+	fn stat(&self) -> impl Future<Output = io::Result<Stat>>;
+
+	fn symlink<S, F>(&self, original: S, _is_dir: F) -> impl Future<Output = io::Result<()>>
+	where
+		S: AsStrand,
+		F: AsyncFnOnce() -> io::Result<bool>;
+
+	fn symlink_dir<S>(&self, original: S) -> impl Future<Output = io::Result<()>>
+	where
+		S: AsStrand,
+	{
+		self.symlink(original, async || Ok(true))
+	}
+
+	fn symlink_file<S>(&self, original: S) -> impl Future<Output = io::Result<()>>
+	where
+		S: AsStrand,
+	{
+		self.symlink(original, async || Ok(false))
+	}
+
+	fn trash(&self) -> impl Future<Output = io::Result<()>>;
+
+	fn write<C>(&self, contents: C) -> impl Future<Output = io::Result<()>>
+	where
+		C: AsRef<[u8]>,
+	{
+		async move {
+			let mut file =
+				pin!(self.demand().write(true).create(true).truncate(true).open(self.as_url()).await?);
+
+			let written = file.write_all(contents.as_ref()).await;
+			written.and(file.shutdown().await)
+		}
+	}
+}
+
+// --- DirReader
+pub trait DirReader {
+	type Entry: FileHolder;
+
+	#[must_use]
+	fn next(&mut self) -> impl Future<Output = io::Result<Option<Self::Entry>>>;
+}
+
+// --- FileHolder
+pub trait FileHolder {
+	#[must_use]
+	fn file(&self) -> impl Future<Output = io::Result<File>>;
+
+	#[must_use]
+	fn file_type(&self) -> impl Future<Output = io::Result<StatType>>;
+
+	#[must_use]
+	fn lstat(&self) -> impl Future<Output = io::Result<Stat>>;
+
+	#[must_use]
+	fn name(&self) -> StrandCow<'_>;
+
+	#[must_use]
+	fn path(&self) -> PathBufDyn;
+
+	#[must_use]
+	fn url(&self) -> UrlBuf;
+}
+
+// --- FileBuilder
+pub trait FileBuilder: Sized + Default {
+	type File: AsyncRead + AsyncSeek + AsyncWrite;
+
+	fn append(&mut self, append: bool) -> &mut Self;
+
+	fn attrs(&mut self, attrs: Attrs) -> &mut Self;
+
+	fn create(&mut self, create: bool) -> &mut Self;
+
+	fn create_new(&mut self, create_new: bool) -> &mut Self;
+
+	fn open<U>(&self, url: U) -> impl Future<Output = io::Result<Self::File>>
+	where
+		U: AsUrl;
+
+	fn read(&mut self, read: bool) -> &mut Self;
+
+	fn truncate(&mut self, truncate: bool) -> &mut Self;
+
+	fn write(&mut self, write: bool) -> &mut Self;
+}

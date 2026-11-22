@@ -1,0 +1,103 @@
+use anyhow::Result;
+use yazi_actor::act;
+use yazi_core::Ctx;
+use yazi_macro::{emit, warn};
+use yazi_shared::{Layer, event::{ActionCow, Event}};
+use yazi_term::event::{ClipboardEvent, DndEvent, Event as TermEvent, KeyEvent, MouseEvent};
+
+use crate::{Executor, Router, View, app::App};
+
+pub(super) struct Dispatcher<'a> {
+	app: &'a mut App,
+}
+
+impl<'a> Dispatcher<'a> {
+	pub(super) fn new(app: &'a mut App) -> Self { Self { app } }
+
+	pub(super) fn dispatch(&mut self, event: Event) {
+		let result = match event {
+			Event::Call(action) => Ok(self.dispatch_call(action)),
+			Event::Seq(actions) => Ok(self.dispatch_seq(actions)),
+			Event::Term(TermEvent::Key(key)) => self.dispatch_key(key),
+			Event::Term(TermEvent::Mouse(mouse)) => self.dispatch_mouse(mouse),
+			Event::Term(TermEvent::Resize(_)) => self.dispatch_resize(),
+			Event::Term(TermEvent::FocusIn) => self.dispatch_focus(false),
+			Event::Term(TermEvent::FocusOut) => self.dispatch_focus(true),
+			Event::Term(TermEvent::Paste(str)) => self.dispatch_paste(str),
+			Event::Term(TermEvent::Dnd(dnd)) => self.dispatch_dnd(dnd),
+			Event::Term(TermEvent::Clipboard(clip)) => self.dispatch_clipboard(clip),
+			Event::Term(TermEvent::Report(report)) => self.dispatch_report(report),
+		};
+
+		if let Err(e) = &result {
+			warn!("Event dispatch error: {e:?}");
+		}
+	}
+
+	fn dispatch_call(&mut self, action: ActionCow) {
+		let tx = action.replier().cloned();
+		let result = Executor::new(self.app).execute(action);
+
+		if let Err(e) = &result {
+			warn!("Call dispatch error: {e:?}");
+		}
+		if let Some(tx) = tx {
+			tx.reply_if_unclaimed(result);
+		}
+	}
+
+	pub(super) fn dispatch_seq(&mut self, mut actions: Vec<ActionCow>) {
+		if let Some(last) = actions.pop() {
+			self.dispatch_call(last);
+		}
+		if !actions.is_empty() {
+			emit!(Seq(actions));
+		}
+	}
+
+	fn dispatch_key(&mut self, key: KeyEvent) -> Result<()> {
+		Router::new(self.app).route(key)?;
+		Ok(())
+	}
+
+	fn dispatch_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+		let cx = &mut Ctx::active(&mut self.app.core);
+		act!(app:mouse, cx, mouse).map(drop)
+	}
+
+	fn dispatch_resize(&mut self) -> Result<()> {
+		let cx = &mut Ctx::active(&mut self.app.core);
+		act!(app:resize, cx, crate::Root::reflow as fn(_) -> _).map(drop)
+	}
+
+	fn dispatch_focus(&mut self, lost: bool) -> Result<()> {
+		let cx = &mut Ctx::active(&mut self.app.core);
+		act!(app:focus, cx, lost).map(drop)
+	}
+
+	fn dispatch_paste(&mut self, str: String) -> Result<()> {
+		if let Some(mut guard) = self.app.core.input.lock_mut() {
+			guard.feed(str.into())?;
+		} else if self.app.core.layer() == Layer::View
+			&& let Some(view) = &mut self.app.core.active_mut().view
+		{
+			View::paste(view, &str);
+		}
+		Ok(())
+	}
+
+	fn dispatch_dnd(&mut self, dnd: DndEvent) -> Result<()> {
+		let cx = &mut Ctx::active(&mut self.app.core);
+		act!(app:dnd, cx, dnd).map(drop)
+	}
+
+	fn dispatch_clipboard(&mut self, clip: ClipboardEvent) -> Result<()> {
+		let cx = &mut Ctx::active(&mut self.app.core);
+		act!(app:clipboard, cx, clip).map(drop)
+	}
+
+	fn dispatch_report(&mut self, report: yazi_term::event::Report) -> Result<()> {
+		let cx = &mut Ctx::active(&mut self.app.core);
+		act!(app:report, cx, report).map(drop)
+	}
+}

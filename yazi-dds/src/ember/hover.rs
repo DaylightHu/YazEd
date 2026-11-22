@@ -1,0 +1,38 @@
+use mlua::{IntoLua, Lua, Value};
+use serde::{Deserialize, Serialize};
+use yazi_shared::{id::Id, url::{UrlBuf, UrlCow}};
+
+use super::Ember;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EmberHover<'a> {
+	pub(super) tab: Id,
+	url:            Option<UrlCow<'a>>,
+}
+
+impl<'a> EmberHover<'a> {
+	pub(crate) fn borrowed(tab: Id, url: Option<&'a UrlBuf>) -> Ember<'a> {
+		Self { tab, url: url.map(Into::into) }.into()
+	}
+}
+
+impl EmberHover<'static> {
+	pub(crate) fn owned(tab: Id, _: Option<&UrlBuf>) -> Ember<'static> {
+		Self { tab, url: None }.into()
+	}
+}
+
+impl<'a> From<EmberHover<'a>> for Ember<'a> {
+	fn from(value: EmberHover<'a>) -> Self { Self::Hover(value) }
+}
+
+impl IntoLua for EmberHover<'_> {
+	fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+		lua
+			.create_table_from([
+				("tab", self.tab.into_lua(lua)?),
+				("url", self.url.map(UrlCow::into_owned).into_lua(lua)?),
+			])?
+			.into_lua(lua)
+	}
+}

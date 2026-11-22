@@ -1,0 +1,41 @@
+use anyhow::Result;
+use yazi_core::Ctx;
+use yazi_macro::{render, succ};
+use yazi_parser::mgr::TabCloseForm;
+use yazi_shared::data::Data;
+
+use crate::{Actor, act};
+
+pub struct TabClose;
+
+impl Actor for TabClose {
+	type Form = TabCloseForm;
+
+	const NAME: &str = "tab_close";
+
+	fn act(cx: &mut Ctx, form: Self::Form) -> Result<Data> {
+		let len = cx.tabs().len();
+		if len < 2 || form.idx >= len {
+			succ!();
+		}
+		if cx.tabs()[form.idx].view.as_ref().is_some_and(|view| view.protect()) {
+			succ!();
+		}
+
+		let tabs = cx.tabs_mut();
+		tabs.remove(form.idx).shutdown();
+
+		if form.idx < tabs.cursor {
+			tabs.set_idx(tabs.cursor - 1);
+		} else {
+			tabs.set_idx(tabs.cursor.min(tabs.len() - 1));
+		}
+
+		let cx = &mut Ctx::renew(cx);
+		act!(mgr:refresh, cx)?;
+		act!(mgr:peek, cx, true)?;
+		act!(app:title, cx).ok();
+
+		succ!(render!());
+	}
+}

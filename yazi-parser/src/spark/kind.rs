@@ -1,0 +1,46 @@
+use strum::{Display, IntoStaticStr};
+
+#[derive(Clone, Copy, Debug, Display, Eq, IntoStaticStr, PartialEq)]
+#[strum(serialize_all = "kebab-case")]
+pub enum SparkKind {
+	// app:title
+	IndAppTitle,
+
+	// mgr:close
+	KeyClose,
+	// mgr:enter
+	KeyEnter,
+	IndEnter,
+	EmitEnter,
+	RelayEnter,
+	// mgr:hidden
+	KeyHidden,
+	IndHidden,
+	// mgr:leave
+	KeyLeave,
+	IndLeave,
+	EmitLeave,
+	RelayLeave,
+	// mgr:sort
+	KeySort,
+	IndSort,
+	// mgr:stash
+	IndStash,
+	RelayStash,
+	// mgr:update_files
+	RelayUpdateFiles,
+	// mgr:watch
+	IndWatch,
+	// mgr:quit
+	KeyQuit,
+
+	// input:close
+	KeyInputClose,
+	IndInputClose,
+
+	// which:activate
+	IndWhichActivate,
+
+	// notify:push
+	RelayNotifyPush,
+}

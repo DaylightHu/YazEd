@@ -1,0 +1,22 @@
+yazi_macro::mod_pub!(anyhow arc_swap bytes cell clap_complete fs indexmap log mlua path ratatui rustls serde strum tokio toml vec utf8 wtf8);
+
+yazi_macro::mod_flat!(compact_string option percent_encoding result sstr tests twox uzers);
+
+#[cfg(windows)]
+yazi_macro::mod_flat!(win32);
+
+#[cfg(unix)]
+yazi_macro::mod_flat!(posix);
+
+pub fn init() -> ::anyhow::Result<()> {
+	_ = fdlimit::raise_fd_limit();
+
+	log::LOG_LEVEL.replace(<_>::from(std::env::var("YAZI_LOG").unwrap_or_default()));
+
+	#[cfg(unix)]
+	Uzers::init();
+
+	rustls::init()?;
+
+	Ok(())
+}

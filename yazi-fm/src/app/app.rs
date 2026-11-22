@@ -1,0 +1,104 @@
+use std::{sync::atomic::Ordering, time::{Duration, Instant}};
+
+use anyhow::Result;
+use tokio::{select, time::sleep};
+use yazi_actor::act;
+use yazi_core::{Core, Ctx};
+use yazi_macro::{render, succ};
+use yazi_shared::{data::Data, event::{Event, EventRx, NEED_RENDER}};
+use yazi_tui::Raterm;
+
+use crate::Dispatcher;
+
+pub(crate) struct App {
+	pub(crate) core: Core,
+
+	pub(super) need_render:     u8,
+	pub(super) clear_on_render: bool,
+	pub(crate) last_render:     Instant,
+	next_render:                Option<Duration>,
+}
+
+impl App {
+	fn make(term: Raterm) -> Self {
+		Self {
+			core: Core::make(term),
+
+			need_render:     0,
+			clear_on_render: false,
+			last_render:     Instant::now(),
+			next_render:     None,
+		}
+	}
+
+	pub(crate) async fn serve(mut rx: EventRx) -> Result<()> {
+		let term = Raterm::start()?;
+
+		let mut app = Self::make(term);
+		app.bootstrap()?;
+
+		loop {
+			if let Some(t) = app.next_render.take() {
+				select! {
+					_ = sleep(t) => {
+						app.render()?;
+					}
+					r = app.drain(&mut rx) => if !r? {
+						break;
+					}
+				}
+			} else if !app.drain(&mut rx).await? {
+				break;
+			}
+		}
+		Ok(())
+	}
+
+	fn bootstrap(&mut self) -> Result<Data> {
+		let cx = &mut Ctx::active(&mut self.core);
+		act!(app:bootstrap, cx)?;
+		act!(app:reflow, cx, crate::Root::reflow as fn(_) -> _)?;
+		succ!(render!())
+	}
+
+	async fn drain(&mut self, rx: &mut EventRx) -> Result<bool> {
+		let Some(event) = rx.recv().await else {
+			return Ok(false);
+		};
+
+		self.dispatch(event)?;
+		while let Ok(e) = rx.try_recv() {
+			self.dispatch(e)?;
+		}
+
+		Ok(true)
+	}
+
+	fn dispatch(&mut self, event: Event) -> Result<()> {
+		let viewing = self.core.active().view.is_some();
+		let tab_bar = self.core.mgr.tabs.len() > 1;
+		Dispatcher::new(self).dispatch(event);
+
+		let now_viewing = self.core.active().view.is_some();
+		if viewing != now_viewing || (now_viewing && tab_bar != (self.core.mgr.tabs.len() > 1)) {
+			let cx = &mut Ctx::active(&mut self.core);
+			act!(app:resize, cx, crate::Root::reflow as fn(_) -> _)?;
+		}
+		if viewing != now_viewing {
+			self.clear_on_render = true;
+			render!();
+		}
+
+		self.need_render = NEED_RENDER.load(Ordering::Relaxed);
+		if self.need_render == 0 {
+			return Ok(());
+		}
+
+		self.next_render = Duration::from_millis(10).checked_sub(self.last_render.elapsed());
+		if self.next_render.is_none() {
+			self.render()?;
+		}
+
+		Ok(())
+	}
+}

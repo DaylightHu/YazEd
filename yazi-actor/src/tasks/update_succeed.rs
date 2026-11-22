@@ -1,0 +1,38 @@
+use anyhow::Result;
+use yazi_core::{Ctx, Invalidator};
+use yazi_macro::succ;
+use yazi_parser::tasks::UpdateSucceedForm;
+use yazi_shared::{data::Data, url::UrlLike};
+
+use crate::{Actor, act};
+
+pub struct UpdateSucceed;
+
+impl Actor for UpdateSucceed {
+	type Form = UpdateSucceedForm;
+
+	const NAME: &str = "update_succeed";
+
+	fn act(cx: &mut Ctx, form: Self::Form) -> Result<Data> {
+		if form.urls.is_empty() {
+			succ!();
+		}
+
+		if form.track
+			&& form.id == cx.tasks.scheduler.behavior.first_id()
+			&& let Some((trail, key)) = form.urls[0].pair()
+			&& trail == *cx.cwd()
+		{
+			cx.current_mut().trace = Some(key.into());
+			act!(mgr:hover, cx)?;
+		}
+
+		let mut invalidator = Invalidator::new(&mut cx.mgr);
+		for parent in form.urls.iter().filter_map(|u| u.parent()) {
+			invalidator.invalidate(parent);
+		}
+
+		cx.mgr.watcher.report(form.urls);
+		succ!();
+	}
+}

@@ -1,0 +1,39 @@
+use std::io;
+
+use anyhow::Result;
+use yazi_core::{Ctx, mgr::DisplaceOpt};
+use yazi_macro::succ;
+use yazi_parser::VoidForm;
+use yazi_proxy::MgrProxy;
+use yazi_shared::{data::Data, scope::ScopeLike, url::UrlLike};
+use yazi_vfs::engine;
+
+use crate::Actor;
+
+pub struct Displace;
+
+impl Actor for Displace {
+	type Form = VoidForm;
+
+	const NAME: &str = "displace";
+
+	fn act(cx: &mut Ctx, _: Self::Form) -> Result<Data> {
+		if cx.cwd().is_regular() {
+			succ!();
+		}
+
+		let scope = cx.tab().to_scope();
+		let from = cx.cwd().to_owned();
+		tokio::spawn(async move {
+			let to = match engine::reroute(&from).await {
+				Ok(file) => Ok(file),
+				Err(e) if e.kind() == io::ErrorKind::Unsupported => return,
+				Err(e) => Err(e.into()),
+			};
+
+			MgrProxy::displace_do(scope, DisplaceOpt { to, from });
+		});
+
+		succ!();
+	}
+}

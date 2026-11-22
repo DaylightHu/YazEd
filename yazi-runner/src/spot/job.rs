@@ -1,0 +1,41 @@
+use mlua::{IntoLua, Lua, Value};
+use yazi_config::plugin::SpotterArc;
+use yazi_fs::file::File;
+use yazi_shared::{id::Ids, pool::Symbol, scope::{Scope, ScopeLike}, sendable::Sendable};
+use yazi_shim::CompactString;
+
+use crate::PluginJob;
+
+static IDS: Ids = Ids::new();
+
+#[derive(Clone, Debug)]
+pub struct SpotJob {
+	pub spotter: SpotterArc,
+	pub file:    File,
+	pub mime:    Symbol<str>,
+	pub skip:    usize,
+	pub scope:   Scope,
+}
+
+impl PluginJob for SpotJob {
+	fn name(&self) -> &CompactString { &self.spotter.name }
+}
+
+impl ScopeLike for SpotJob {
+	fn scope(&self) -> &Scope { &self.scope }
+}
+
+impl IntoLua for SpotJob {
+	fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+		lua
+			.create_table_from([
+				("id", IDS.next().into_lua(lua)?),
+				("scope", self.scope.into_lua(lua)?),
+				("args", Sendable::args_to_table_ref(lua, &self.spotter.args)?.into_lua(lua)?),
+				("file", self.file.into_lua(lua)?),
+				("mime", self.mime.into_lua(lua)?),
+				("skip", self.skip.into_lua(lua)?),
+			])?
+			.into_lua(lua)
+	}
+}

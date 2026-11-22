@@ -1,0 +1,89 @@
+local M = {}
+
+local state = ya.sync(function()
+	local tab = cx.tab
+	if not tab then
+		return
+	end
+
+	local selected = ya.iter(tab.selected):map(function(f) return f.url end):into()
+	return tab.current.cwd, selected
+end)
+
+function M:entry(job)
+	ya.emit("escape", { visual = true, scope = ya.clone(job.scope) })
+
+	local cwd, selected = state()
+	if not cwd then
+		return
+	end
+
+	if not cwd.spec.is_regular then
+		return ya.notify { title = "Fzf", content = "Only supported for regular paths", timeout = 5, level = "warn" }
+	end
+
+	local permit = ui.hide()
+	local output, err = M.run_with(cwd, selected)
+
+	permit:drop()
+	if not output then
+		return ya.notify { title = "Fzf", content = tostring(err), timeout = 5, level = "error" }
+	end
+
+	local urls = M.split_urls(cwd, output)
+	if #urls == 0 then
+		return
+	elseif #urls == 1 then
+		local stat = #selected == 0 and fs.stat(urls[1])
+		return ya.emit(stat and stat.is_dir and "cd" or "reveal", { urls[1], raw = true, scope = job.scope })
+	end
+
+	local files = ya.iter(urls):map(fs.file):into()
+	if #files > 0 then
+		files.state = #selected > 0 and "off" or "on"
+		files.scope = job.scope
+		ya.emit("toggle_all", files)
+	end
+end
+
+---@param cwd Url
+---@param selected Url[]
+---@return string?, Error?
+function M.run_with(cwd, selected)
+	local child, err = Command("fzf")
+		:arg("-m")
+		:cwd(tostring(cwd))
+		:stdin(#selected > 0 and Command.PIPED or Command.INHERIT)
+		:stdout(Command.PIPED)
+		:spawn()
+
+	if not child then
+		return nil, Err("Failed to start `fzf`, error: %s", err)
+	end
+
+	for _, u in ipairs(selected) do
+		child:write_all(string.format("%s\n", u))
+	end
+	if #selected > 0 then
+		child:flush()
+	end
+
+	local output, err = child:wait_with_output()
+	if not output then
+		return nil, Err("Cannot read `fzf` output, error: %s", err)
+	elseif not output.status.success and output.status.code ~= 130 then
+		return nil, Err("`fzf` exited with error code %s", output.status.code)
+	end
+	return output.stdout, nil
+end
+
+function M.split_urls(cwd, output)
+	return ya.iter(output:gmatch("[^\r\n]+"))
+		:map(function(line)
+			local u = Url(line)
+			return u.is_absolute and u or cwd:resolve(u)
+		end)
+		:into()
+end
+
+return M

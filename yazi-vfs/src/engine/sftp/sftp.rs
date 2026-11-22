@@ -1,0 +1,235 @@
+use std::{io, sync::Arc};
+
+use deadpool::managed::PoolError;
+use typed_path::UnixPath;
+use yazi_config::{VFS, vfs::ServiceSftp};
+use yazi_fs::{engine::{Capabilities, DirReader, Engine, FileBuilder, FileHolder, Transit}, file::File, remover::Removal};
+use yazi_sftp::fs::Attrs;
+use yazi_shared::{auth::AuthKind, path::{DynPath, PathBufDyn}, strand::AsStrand, url::{AsUrl, Url, UrlBuf, UrlCow, UrlLike}};
+
+use super::Stat;
+use crate::engine::{ProgressiveCopier, sftp::Conn};
+
+pub struct Sftp<'a> {
+	url:             Url<'a>,
+	pub(super) path: &'a UnixPath,
+
+	config: Arc<ServiceSftp>,
+	pool:   deadpool::managed::Pool<Conn>,
+}
+
+impl AsUrl for Sftp<'_> {
+	fn as_url(&self) -> Url<'_> { self.url }
+}
+
+impl UrlLike for Sftp<'_> {}
+
+impl<'a> Engine for Sftp<'a> {
+	type Demand = super::Demand;
+	type File = super::RwFile;
+	type Me<'b> = Sftp<'b>;
+	type ReadDir = super::ReadDir;
+	type UrlCow = UrlCow<'a>;
+
+	async fn absolute(&self) -> io::Result<Self::UrlCow> {
+		Ok(if let Some(u) = crate::engine::try_absolute_impl(self.url) {
+			u
+		} else {
+			self.canonicalize().await?.into()
+		})
+	}
+
+	async fn canonicalize(&self) -> io::Result<UrlBuf> {
+		Ok(UrlBuf::Unix {
+			loc:  self.op().await?.realpath(self.path).await?.into(),
+			auth: self.config.auth.clone(),
+		})
+	}
+
+	async fn capabilities(&self) -> io::Result<Capabilities> {
+		Ok(Capabilities::for_kind(AuthKind::Sftp))
+	}
+
+	async fn casefold(&self) -> io::Result<UrlBuf> {
+		let Some((parent, name)) = self.parent().zip(self.name()) else {
+			return Ok(self.to_url());
+		};
+
+		if !self.lstat().await?.is_link() {
+			return Ok(match self.canonicalize().await?.name() {
+				Some(name) => parent.try_join(name)?,
+				None => Err(io::Error::other("Cannot get filename"))?,
+			});
+		}
+
+		let mut it = Self::new(parent).await?.read_dir().await?;
+		let mut similar = None;
+		while let Some(dent) = it.next().await? {
+			let s = dent.name();
+			if !name.eq_ignore_ascii_case(&s) {
+				continue;
+			} else if s == name {
+				return Ok(dent.url());
+			} else if similar.is_none() {
+				similar = Some(s.into_owned());
+			} else {
+				return Err(io::ErrorKind::NotFound.into());
+			}
+		}
+
+		similar.map(|n| parent.try_join(n)).transpose()?.ok_or(io::ErrorKind::NotFound.into())
+	}
+
+	async fn copy_to(&self, to: Url<'_>, attrs: yazi_fs::engine::Attrs) -> io::Result<Transit> {
+		let to = to.physical();
+		if self.auth() != to.auth() {
+			return Ok(Transit::unsupported());
+		}
+
+		Ok(ProgressiveCopier::spawn(self.to_url(), to.into(), attrs))
+	}
+
+	async fn copy_from(&self, from: Url<'_>, attrs: yazi_fs::engine::Attrs) -> io::Result<Transit> {
+		let from = from.physical();
+		if self.auth() != from.auth() {
+			return Ok(Transit::unsupported());
+		}
+
+		Ok(ProgressiveCopier::spawn(from.into(), self.to_url(), attrs))
+	}
+
+	async fn create_dir(&self) -> io::Result<()> {
+		let op = self.op().await?;
+		let result = op.mkdir(self.path, Attrs::default()).await;
+
+		if let Err(yazi_sftp::Error::Status(status)) = &result
+			&& status.is_failure()
+			&& op.lstat(self.path).await.is_ok()
+		{
+			return Err(io::ErrorKind::AlreadyExists.into());
+		}
+
+		Ok(result?)
+	}
+
+	async fn create_file(&self) -> io::Result<Self::File> {
+		self.demand().write(true).create(true).truncate(true).open(self.as_url()).await
+	}
+
+	async fn create_file_new(&self) -> io::Result<Self::File> {
+		self.demand().write(true).create_new(true).open(self.as_url()).await
+	}
+
+	async fn hard_link<P>(&self, to: P) -> io::Result<()>
+	where
+		P: DynPath,
+	{
+		let to = to.dyn_path().as_unix()?;
+
+		Ok(self.op().await?.hardlink(self.path, to).await?)
+	}
+
+	async fn lstat(&self) -> io::Result<yazi_fs::stat::Stat> {
+		let attrs = self.op().await?.lstat(self.path).await?;
+		Ok(Stat::try_from((self.path.file_name().unwrap_or_default(), &attrs))?.0)
+	}
+
+	async fn new<'b>(url: Url<'b>) -> io::Result<Self::Me<'b>> {
+		let Url::Unix { loc, auth } = url else {
+			return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("Not a SFTP URL: {url}")));
+		};
+
+		// OpenSSH rejects an empty OPENDIR path
+		let path = if loc.is_empty() { UnixPath::new(".") } else { loc.as_inner() };
+		let config: Arc<ServiceSftp> = VFS.service(auth)?;
+		let pool = Conn::pool(config.clone());
+		Ok(Self::Me { url, path, config, pool })
+	}
+
+	async fn read_dir(self) -> io::Result<Self::ReadDir> {
+		Ok(Self::ReadDir {
+			dir:    Arc::new(self.to_url()),
+			reader: self.op().await?.read_dir(self.path).await?,
+		})
+	}
+
+	async fn read_link(&self) -> io::Result<PathBufDyn> {
+		Ok(self.op().await?.readlink(self.path).await?.into())
+	}
+
+	async fn reroute(&self) -> io::Result<File> {
+		if self.is_absolute() {
+			return Err(io::ErrorKind::Unsupported.into());
+		}
+
+		let url = self.canonicalize().await?;
+		Self::new(url.as_url()).await?.file().await
+	}
+
+	async fn remove_dir(&self) -> io::Result<()> { Ok(self.op().await?.rmdir(self.path).await?) }
+
+	async fn remove_dir_all(&self) -> io::Result<Removal> {
+		Ok(crate::remover::Remover::spawn(self.to_url()))
+	}
+
+	async fn remove_file(&self) -> io::Result<()> { Ok(self.op().await?.remove(self.path).await?) }
+
+	async fn rename<P>(&self, to: P) -> io::Result<()>
+	where
+		P: DynPath,
+	{
+		let to = to.dyn_path().as_unix()?;
+		let op = self.op().await?;
+
+		match op.rename_posix(self.path, &to).await {
+			Ok(()) => {}
+			Err(yazi_sftp::Error::Unsupported) => {
+				match op.remove(&to).await.map_err(io::Error::from) {
+					Ok(()) => {}
+					Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+					Err(e) => Err(e)?,
+				}
+				op.rename(self.path, &to).await?;
+			}
+			Err(e) => Err(e)?,
+		}
+		Ok(())
+	}
+
+	async fn set_attrs(&self, attrs: yazi_fs::engine::Attrs) -> io::Result<()> {
+		let attrs = super::Attrs(attrs)
+			.try_into()
+			.map_err(|()| io::Error::new(io::ErrorKind::InvalidInput, "Cannot convert attributes"))?;
+
+		Ok(self.op().await?.setstat(self.path, attrs).await?)
+	}
+
+	async fn stat(&self) -> io::Result<yazi_fs::stat::Stat> {
+		let attrs = self.op().await?.stat(self.path).await?;
+		Ok(Stat::try_from((self.path.file_name().unwrap_or_default(), &attrs))?.0)
+	}
+
+	async fn symlink<S, F>(&self, original: S, _is_dir: F) -> io::Result<()>
+	where
+		S: AsStrand,
+		F: AsyncFnOnce() -> io::Result<bool>,
+	{
+		let original = original.as_strand().encoded_bytes();
+
+		Ok(self.op().await?.symlink(original, self.path).await?)
+	}
+
+	async fn trash(&self) -> io::Result<()> {
+		Err(io::Error::new(io::ErrorKind::Unsupported, "Trash not supported"))
+	}
+}
+
+impl<'a> Sftp<'a> {
+	pub(super) async fn op(&self) -> io::Result<deadpool::managed::Object<Conn>> {
+		self.pool.get().await.map_err(|e| match e {
+			PoolError::Timeout(_) => io::Error::new(io::ErrorKind::TimedOut, e.to_string()),
+			PoolError::Backend(e) => e,
+			e => io::Error::other(e.to_string()),
+		})
+	}
+}

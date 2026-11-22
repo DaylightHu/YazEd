@@ -1,0 +1,128 @@
+use std::{ops::Deref, ptr};
+
+use mlua::{AnyUserData, IntoLua, UserData, UserDataFields, UserDataMethods};
+use yazi_binding::Range;
+use yazi_config::THEME;
+use yazi_fs::file::FileInventory;
+use yazi_shared::{path::DynPath, url::UrlLike};
+
+use super::{Tab, TabCache};
+use crate::lives::{CtxRef, PtrCell};
+
+pub(super) struct File {
+	pub(super) idx:    usize,
+	pub(super) folder: PtrCell<yazi_core::tab::Folder>,
+	tab:               Tab,
+}
+
+impl Deref for File {
+	type Target = yazi_fs::file::File;
+
+	fn deref(&self) -> &Self::Target { &self.folder.entries[self.idx] }
+}
+
+impl File {
+	pub(super) fn make(
+		idx: usize,
+		folder: &yazi_core::tab::Folder,
+		tab: Tab,
+	) -> mlua::Result<AnyUserData> {
+		TabCache::get(tab.idx).file(Self { idx, folder: folder.into(), tab })
+	}
+
+	#[inline]
+	fn is_hovered(&self) -> bool { self.idx == self.folder.cursor }
+}
+
+impl UserData for File {
+	fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+		yazi_binding::impl_file_fields!(fields);
+
+		fields.add_field_method_get("idx", |_, me| Ok(me.idx + 1));
+		fields.add_field_method_get("is_hovered", |_, me| Ok(me.is_hovered()));
+		fields.add_field_method_get("in_current", |_, me| Ok(ptr::eq(&*me.folder, &me.tab.current)));
+		fields.add_field_method_get("in_preview", |_, me| {
+			Ok(me.idx == me.folder.cursor && me.tab.hovered().is_some_and(|f| f.url == me.folder.url))
+		});
+	}
+
+	fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+		yazi_binding::impl_file_methods!(methods);
+
+		methods.add_method("size", |_, me, ()| {
+			Ok(if me.is_dir() { me.folder.entries.sizes.get(&me.key()).copied() } else { Some(me.len) })
+		});
+		methods.add_method("mime", |lua, me, ()| {
+			let cx: CtxRef = lua.named_registry_value("cx")?;
+			cx.mgr.mimetype.get(&me.url).map(|s| lua.create_string(s)).transpose()
+		});
+		methods.add_method("prefix", |lua, me, ()| {
+			if !me.has_trail() {
+				return Ok(None);
+			}
+
+			let mut comp = me.try_strip_prefix(me.trail()).unwrap_or(me.loc()).components();
+			comp.next_back();
+			lua.create_string(comp.dyn_path().encoded_bytes()).map(Some)
+		});
+		methods.add_method("style", |lua, me, ()| {
+			let cx: CtxRef = lua.named_registry_value("cx")?;
+			let mime = cx.mgr.mimetype.get(&me.url).unwrap_or_default();
+			Ok(THEME.filetype.match_style(me, mime))
+		});
+		methods.add_method("is_yanked", |lua, me, ()| {
+			let cx: CtxRef = lua.named_registry_value("cx")?;
+			Ok(if !cx.mgr.yanked.contains(&me.url) {
+				0u8
+			} else if cx.mgr.yanked.cut {
+				2u8
+			} else {
+				1u8
+			})
+		});
+		methods.add_method("is_marked", |_, me, ()| {
+			let Some(visual) = me.tab.mode.visual() else {
+				return Ok(0u8);
+			};
+			if !visual.contains(me.idx, me.tab.current.cursor, me.folder.entries.len()) {
+				return Ok(0u8);
+			}
+			if me.folder.url != me.tab.current.url {
+				return Ok(0u8);
+			}
+			Ok(if me.tab.mode.is_select() { 1u8 } else { 2u8 })
+		});
+		methods.add_method("is_selected", |_, me, ()| Ok(me.tab.selected.contains(&me.url)));
+		methods.add_method("found", |lua, me, ()| {
+			let Some(finder) = &me.tab.finder else {
+				return Ok(None);
+			};
+
+			let Some(idx) = finder.matched_idx(&me.folder, me.key()) else {
+				return Ok(None);
+			};
+
+			lua.create_sequence_from([idx.into_lua(lua)?, finder.matched.len().into_lua(lua)?]).map(Some)
+		});
+		methods.add_method("highlights", |lua, me, ()| {
+			let Some(finder) = &me.tab.finder else {
+				return Ok(None);
+			};
+			if me.folder.url != me.tab.current.url {
+				return Ok(None);
+			}
+			let Some(Some(h)) = me.name().map(|s| finder.filter.highlighted(s)) else {
+				return Ok(None);
+			};
+
+			lua.create_sequence_from(h.into_iter().map(Range::from)).map(Some)
+		});
+	}
+}
+
+inventory::submit! {
+	FileInventory {
+		register: |_| {},
+		borrow: |ud, f| f(&*ud.borrow::<File>()?),
+	}
+}

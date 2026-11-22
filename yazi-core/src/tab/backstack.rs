@@ -1,0 +1,156 @@
+use std::iter;
+
+use hashbrown::HashSet;
+use yazi_shared::{path::PathBufDyn, url::{AsUrl, Url, UrlBuf}};
+
+#[derive(Default)]
+pub struct Backstack {
+	cursor: usize,
+	stack:  Vec<UrlBuf>,
+}
+
+impl Backstack {
+	pub fn push(&mut self, url: Url) {
+		if self.stack.is_empty() {
+			self.stack.push(url.to_owned());
+			return;
+		}
+
+		if self.stack[self.cursor] == url {
+			return;
+		}
+
+		self.cursor += 1;
+		self.stack.truncate(self.cursor);
+		self.stack.push(url.to_owned());
+
+		// Only keep 30 URLs before the cursor, the cleanup threshold is 60
+		if self.stack.len() > 60 {
+			let start = self.cursor.saturating_sub(30);
+			self.stack.drain(..start);
+			self.cursor -= start;
+		}
+	}
+
+	pub fn replace(&mut self, url: impl AsUrl) {
+		let url = url.as_url();
+		let Some(current) = self.stack.get_mut(self.cursor) else { return };
+
+		if *current != url {
+			*current = url.to_owned();
+			self.dedup();
+		}
+	}
+
+	pub fn current(&self) -> Option<&UrlBuf> { self.stack.get(self.cursor) }
+
+	pub fn shift_backward(&mut self) -> Option<&UrlBuf> {
+		if self.cursor > 0 {
+			self.cursor -= 1;
+			Some(&self.stack[self.cursor])
+		} else {
+			None
+		}
+	}
+
+	pub fn shift_forward(&mut self) -> Option<&UrlBuf> {
+		if self.cursor + 1 >= self.stack.len() {
+			None
+		} else {
+			self.cursor += 1;
+			Some(&self.stack[self.cursor])
+		}
+	}
+
+	pub fn remove_keys(&mut self, trail: impl AsUrl, keys: &HashSet<PathBufDyn>) {
+		let mut old = self.cursor;
+
+		self.stack.retain(|entry| {
+			let rm = Self::match_keys(entry.as_url(), trail.as_url(), keys);
+			old -= (rm && self.cursor > 0) as usize;
+
+			self.cursor = self.cursor.saturating_sub(1);
+			!rm
+		});
+
+		self.cursor = old.min(self.stack.len().saturating_sub(1));
+		self.dedup();
+	}
+
+	fn match_keys(url: Url, trail: Url, keys: &HashSet<PathBufDyn>) -> bool {
+		iter::successors(Some(url), |u| u.parent())
+			.any(|u| u.pair().is_some_and(|(t, k)| t == trail && keys.contains(&k)))
+	}
+
+	fn dedup(&mut self) {
+		let Some(stack) = self.stack.get(..=self.cursor) else { return };
+		self.cursor -= stack.windows(2).filter(|w| w[0] == w[1]).count();
+		self.stack.dedup();
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::path::Path;
+
+	use super::*;
+
+	#[test]
+	fn test_backstack() {
+		let mut bs: Backstack = Backstack::default();
+		assert_eq!(bs.shift_forward(), None);
+
+		bs.push(Url::regular("1"));
+		assert_eq!(bs.stack[bs.cursor], Url::regular("1"));
+
+		bs.push(Url::regular("2"));
+		bs.push(Url::regular("3"));
+		assert_eq!(bs.stack[bs.cursor], Url::regular("3"));
+
+		assert_eq!(bs.shift_backward().unwrap(), Url::regular("2"));
+		assert_eq!(bs.shift_backward().unwrap(), Url::regular("1"));
+		assert_eq!(bs.shift_backward(), None);
+		assert_eq!(bs.shift_backward(), None);
+		assert_eq!(bs.stack[bs.cursor], Url::regular("1"));
+		assert_eq!(bs.shift_forward().unwrap(), Url::regular("2"));
+		assert_eq!(bs.shift_forward().unwrap(), Url::regular("3"));
+		assert_eq!(bs.shift_forward(), None);
+
+		bs.shift_backward();
+		bs.push(Url::regular("4"));
+
+		assert_eq!(bs.stack[bs.cursor], Url::regular("4"));
+		assert_eq!(bs.shift_forward(), None);
+		assert_eq!(bs.shift_backward().unwrap(), Url::regular("2"));
+	}
+
+	#[test]
+	fn test_remove_keys() {
+		let a = Url::regular("/a");
+		let b = Url::regular("/b");
+
+		let mut bs = Backstack::default();
+		bs.push(a);
+		bs.push(b);
+		bs.push(a);
+
+		bs.remove_keys(&Url::regular("/").to_owned(), &HashSet::from([Path::new("b").into()]));
+		assert_eq!(bs.stack, vec![a.to_owned()]);
+		assert_eq!(bs.cursor, 0);
+	}
+
+	#[test]
+	fn test_remove_keys_keeps_cursor() {
+		let a = Url::regular("/a");
+		let b = Url::regular("/b");
+
+		let mut bs = Backstack::default();
+		bs.push(a);
+		bs.push(b);
+		bs.push(a);
+
+		bs.remove_keys(&Url::regular("/").to_owned(), &HashSet::from([Path::new("c").into()]));
+		assert_eq!(bs.stack, vec![a.to_owned(), b.to_owned(), a.to_owned()]);
+		assert_eq!(bs.cursor, 2);
+	}
+}

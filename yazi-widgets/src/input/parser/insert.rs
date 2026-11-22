@@ -1,0 +1,25 @@
+use mlua::{ExternalError, FromLua, IntoLua, Lua, Value};
+use serde::Deserialize;
+use yazi_shared::event::{ActionCow, FromAction};
+
+#[derive(Debug, Deserialize)]
+pub struct InsertOpt {
+	#[serde(default)]
+	pub(crate) append: bool,
+}
+
+impl<C> FromAction<C> for InsertOpt {
+	fn from_action(a: ActionCow, _: &C) -> anyhow::Result<Self> { Ok(a.deserialize()?) }
+}
+
+impl From<bool> for InsertOpt {
+	fn from(append: bool) -> Self { Self { append } }
+}
+
+impl FromLua for InsertOpt {
+	fn from_lua(_: Value, _: &Lua) -> mlua::Result<Self> { Err("unsupported".into_lua_err()) }
+}
+
+impl IntoLua for InsertOpt {
+	fn into_lua(self, _: &Lua) -> mlua::Result<Value> { Err("unsupported".into_lua_err()) }
+}

@@ -1,0 +1,157 @@
+use std::{borrow::Cow, hash::{Hash, Hasher}};
+
+use hashbrown::Equivalent;
+use yazi_codegen::FromLuaOwned;
+use yazi_shim::wtf8::FromWtf8Vec;
+
+use crate::{path::{Component, DynPath, PathDyn, PathDynError, PathKind}, strand::StrandBuf};
+
+// --- PathBufDyn
+#[derive(Clone, Debug, Eq, FromLuaOwned)]
+pub enum PathBufDyn {
+	Os(std::path::PathBuf),
+	Unix(typed_path::UnixPathBuf),
+}
+
+impl From<&std::path::Path> for PathBufDyn {
+	fn from(value: &std::path::Path) -> Self { Self::Os(value.into()) }
+}
+
+impl From<std::path::PathBuf> for PathBufDyn {
+	fn from(value: std::path::PathBuf) -> Self { Self::Os(value) }
+}
+
+impl From<&std::path::PathBuf> for PathBufDyn {
+	fn from(value: &std::path::PathBuf) -> Self { Self::Os(value.clone()) }
+}
+
+impl From<typed_path::UnixPathBuf> for PathBufDyn {
+	fn from(value: typed_path::UnixPathBuf) -> Self { Self::Unix(value) }
+}
+
+impl From<PathDyn<'_>> for PathBufDyn {
+	fn from(value: PathDyn<'_>) -> Self { value.to_owned() }
+}
+
+impl From<Cow<'_, std::path::Path>> for PathBufDyn {
+	fn from(value: Cow<'_, std::path::Path>) -> Self { Self::Os(value.into_owned()) }
+}
+
+impl TryFrom<PathBufDyn> for std::path::PathBuf {
+	type Error = PathDynError;
+
+	fn try_from(value: PathBufDyn) -> Result<Self, Self::Error> { value.into_os() }
+}
+
+impl TryFrom<PathBufDyn> for typed_path::UnixPathBuf {
+	type Error = PathDynError;
+
+	fn try_from(value: PathBufDyn) -> Result<Self, Self::Error> { value.into_unix() }
+}
+
+// --- Hash
+impl Hash for PathBufDyn {
+	fn hash<H: Hasher>(&self, state: &mut H) { self.dyn_path().hash(state) }
+}
+
+// --- PartialEq
+impl PartialEq for PathBufDyn {
+	fn eq(&self, other: &Self) -> bool { self.dyn_path() == other.dyn_path() }
+}
+
+impl PartialEq<PathDyn<'_>> for PathBufDyn {
+	fn eq(&self, other: &PathDyn<'_>) -> bool { self.dyn_path() == *other }
+}
+
+impl PartialEq<PathDyn<'_>> for &PathBufDyn {
+	fn eq(&self, other: &PathDyn<'_>) -> bool { self.dyn_path() == *other }
+}
+
+impl Equivalent<PathDyn<'_>> for PathBufDyn {
+	fn equivalent(&self, key: &PathDyn<'_>) -> bool { self.dyn_path() == *key }
+}
+
+impl PathBufDyn {
+	#[inline]
+	pub fn from_components<'a, K, I>(kind: K, iter: I) -> Result<Self, PathDynError>
+	where
+		K: Into<PathKind>,
+		I: IntoIterator<Item = Component<'a>>,
+	{
+		match kind.into() {
+			PathKind::Os => iter.into_iter().collect::<Result<_, _>>().map(Self::Os),
+			PathKind::Unix => iter.into_iter().collect::<Result<_, _>>().map(Self::Unix),
+		}
+	}
+
+	pub(crate) fn into_encoded_bytes(self) -> Vec<u8> {
+		match self {
+			Self::Os(p) => p.into_os_string().into_encoded_bytes(),
+			Self::Unix(p) => p.into_vec(),
+		}
+	}
+
+	#[inline]
+	pub fn into_os(self) -> Result<std::path::PathBuf, PathDynError> {
+		match self {
+			Self::Os(p) => Ok(p),
+			Self::Unix(_) => Err(PathDynError::AsOs),
+		}
+	}
+
+	#[inline]
+	pub fn into_unix(self) -> Result<typed_path::UnixPathBuf, PathDynError> {
+		match self {
+			Self::Os(_) => Err(PathDynError::AsUnix),
+			Self::Unix(p) => Ok(p),
+		}
+	}
+
+	pub fn try_push<T>(&mut self, path: T) -> Result<(), PathDynError>
+	where
+		T: DynPath,
+	{
+		let path = path.dyn_path();
+		Ok(match self {
+			Self::Os(p) => p.push(path.as_os()?),
+			Self::Unix(p) => p.push(path.encoded_bytes()),
+		})
+	}
+
+	pub fn with<K, S>(kind: K, strand: S) -> Result<Self, PathDynError>
+	where
+		K: Into<PathKind>,
+		S: Into<StrandBuf>,
+	{
+		Ok(match (kind.into(), strand.into()) {
+			(PathKind::Os, StrandBuf::Os(s)) => Self::Os(s.into()),
+			(PathKind::Os, StrandBuf::Utf8(s)) => Self::Os(s.into()),
+			(PathKind::Os, StrandBuf::Bytes(bytes)) => {
+				Self::Os(std::path::PathBuf::from_wtf8_vec(bytes).map_err(|_| PathDynError::AsOs)?)
+			}
+			(PathKind::Unix, s) => Self::Unix(s.into_encoded_bytes().into()),
+		})
+	}
+
+	pub fn with_capacity<K>(kind: K, capacity: usize) -> Self
+	where
+		K: Into<PathKind>,
+	{
+		match kind.into() {
+			PathKind::Os => Self::Os(std::path::PathBuf::with_capacity(capacity)),
+			PathKind::Unix => Self::Unix(typed_path::UnixPathBuf::with_capacity(capacity)),
+		}
+	}
+
+	pub fn with_str<K, S>(kind: K, s: S) -> Self
+	where
+		K: Into<PathKind>,
+		S: Into<String>,
+	{
+		let s = s.into();
+		match kind.into() {
+			PathKind::Os => Self::Os(s.into()),
+			PathKind::Unix => Self::Unix(s.into()),
+		}
+	}
+}

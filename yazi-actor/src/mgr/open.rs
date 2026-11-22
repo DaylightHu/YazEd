@@ -1,0 +1,81 @@
+use anyhow::Result;
+use futures::StreamExt;
+use hashbrown::HashSet;
+use yazi_boot::BOOT;
+use yazi_core::{Ctx, mgr::OpenDoOpt};
+use yazi_fs::files::Files;
+use yazi_macro::succ;
+use yazi_parser::mgr::OpenForm;
+use yazi_proxy::MgrProxy;
+use yazi_shared::{data::Data, scope::ScopeLike};
+use yazi_vfs::engine;
+
+use crate::{Actor, act, mgr::Quit};
+
+pub struct Open;
+
+impl Actor for Open {
+	type Form = OpenForm;
+
+	const NAME: &str = "open";
+
+	fn act(cx: &mut Ctx, Self::Form { mut opt }: Self::Form) -> Result<Data> {
+		if !opt.interactive && BOOT.chooser_file.is_some() {
+			succ!(if !opt.targets.is_empty() {
+				Quit::with_selected(opt.targets)
+			} else if opt.hovered {
+				Quit::with_selected(cx.hovered_url())
+			} else {
+				act!(mgr:escape_visual, cx)?;
+				Quit::with_selected(cx.tab().selected_or_hovered_urls())
+			});
+		}
+
+		if opt.targets.is_empty() {
+			opt.targets = if opt.hovered {
+				cx.hovered_url().cloned().into_iter().collect()
+			} else {
+				act!(mgr:escape_visual, cx)?;
+				cx.tab().selected_or_hovered_urls().cloned().collect()
+			};
+		}
+		if opt.targets.is_empty() {
+			succ!();
+		}
+
+		let todo: HashSet<_> = opt
+			.targets
+			.iter()
+			.enumerate()
+			.filter(|&(_, u)| !cx.mgr.mimetype.contains(u))
+			.map(|(i, _)| i)
+			.collect();
+
+		let cwd = opt.cwd.unwrap_or_else(|| cx.cwd().clone());
+		let scope = cx.tab().to_scope();
+		let scheduler = cx.tasks.scheduler.clone();
+		tokio::spawn(async move {
+			let mut all = Files::with_capacity(opt.targets.len());
+			let mut part = Files::with_capacity(todo.len());
+
+			let it = futures::stream::iter(opt.targets)
+				.enumerate()
+				.map(|(i, url)| async move { engine::file(url).await.ok().map(|file| (i, file)) })
+				.buffered(3)
+				.filter_map(|item| async move { item });
+
+			futures::pin_mut!(it);
+			while let Some((i, file)) = it.next().await {
+				if todo.contains(&i) {
+					part.push(file.clone());
+				}
+				all.push(file);
+			}
+
+			if !all.is_empty() && scheduler.fetch_mimetype(part, &scope).await {
+				MgrProxy::open_do(OpenDoOpt { cwd, targets: all, interactive: opt.interactive });
+			}
+		});
+		succ!();
+	}
+}

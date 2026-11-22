@@ -1,0 +1,32 @@
+use anyhow::Result;
+use yazi_core::Ctx;
+use yazi_macro::{render, succ};
+use yazi_parser::mgr::FindArrowForm;
+use yazi_shared::data::Data;
+
+use crate::{Actor, act};
+
+pub struct FindArrow;
+
+impl Actor for FindArrow {
+	type Form = FindArrowForm;
+
+	const NAME: &str = "find_arrow";
+
+	fn act(cx: &mut Ctx, form: Self::Form) -> Result<Data> {
+		let tab = cx.tab_mut();
+		let Some(finder) = &mut tab.finder else { succ!() };
+
+		render!(finder.catchup(&tab.current));
+		let offset = if form.previous {
+			finder.prev(&tab.current.entries, tab.current.cursor, false)
+		} else {
+			finder.next(&tab.current.entries, tab.current.cursor, false)
+		};
+
+		if let Some(offset) = offset {
+			act!(mgr:arrow, cx, offset)?;
+		}
+		succ!();
+	}
+}

@@ -1,0 +1,107 @@
+use std::borrow::Cow;
+
+use hashbrown::HashMap;
+use mlua::{FromLua, Lua, Table, Value};
+use yazi_runner::entry::EntryJob;
+use yazi_shared::{data::{Data, DataKey}, id::Id, scope::Scope, sendable::Sendable};
+use yazi_shim::{CompactString, SStr};
+
+use crate::{TaskIn, custom::CustomIn, plugin::PluginProgEntry};
+
+#[derive(Debug)]
+pub(crate) enum PluginIn {
+	Entry(PluginInEntry),
+	Custom(CustomIn),
+}
+
+impl TaskIn for PluginIn {
+	type Prog = ();
+
+	fn id(&self) -> Id {
+		match self {
+			Self::Entry(r#in) => r#in.id(),
+			Self::Custom(r#in) => r#in.id(),
+		}
+	}
+
+	fn set_id(&mut self, id: Id) -> &mut Self {
+		match self {
+			Self::Entry(r#in) => _ = r#in.set_id(id),
+			Self::Custom(r#in) => _ = r#in.set_id(id),
+		}
+		self
+	}
+
+	fn scope(&self) -> &Scope {
+		match self {
+			Self::Entry(r#in) => r#in.scope(),
+			Self::Custom(r#in) => r#in.scope(),
+		}
+	}
+
+	fn title(&self) -> Cow<'_, str> {
+		match self {
+			Self::Entry(r#in) => r#in.title(),
+			Self::Custom(r#in) => r#in.title(),
+		}
+	}
+}
+
+impl_from_in!(Entry(PluginInEntry), Custom(CustomIn));
+
+// --- Entry
+#[derive(Clone, Debug, Default)]
+pub struct PluginInEntry {
+	pub id:     Id,
+	pub plugin: CompactString,
+	pub args:   HashMap<DataKey, Data>,
+	pub scope:  Scope,
+	pub title:  SStr,
+	pub track:  bool,
+}
+
+impl TaskIn for PluginInEntry {
+	type Prog = PluginProgEntry;
+
+	fn id(&self) -> Id { self.id }
+
+	fn set_id(&mut self, id: Id) -> &mut Self {
+		self.id = id;
+		self
+	}
+
+	fn scope(&self) -> &Scope { &self.scope }
+
+	fn title(&self) -> Cow<'_, str> {
+		if self.title.is_empty() {
+			format!("Run plugin '{}'", self.plugin).into()
+		} else {
+			Cow::Borrowed(&self.title)
+		}
+	}
+
+	fn set_title(&mut self, title: impl Into<SStr>) -> &mut Self {
+		self.title = title.into();
+		self
+	}
+}
+
+impl From<PluginInEntry> for EntryJob {
+	fn from(value: PluginInEntry) -> Self {
+		Self { id: value.id, args: value.args, plugin: value.plugin, scope: value.scope }
+	}
+}
+
+impl FromLua for PluginInEntry {
+	fn from_lua(value: Value, lua: &Lua) -> mlua::Result<Self> {
+		let t = Table::from_lua(value, lua)?;
+
+		Ok(Self {
+			plugin: t.raw_get(1)?,
+			args: Sendable::table_to_args(lua, t.raw_get("args")?)?,
+			scope: t.raw_get("scope")?,
+			track: t.raw_get("track")?,
+			..Default::default()
+		})
+	}
+}

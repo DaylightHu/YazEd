@@ -1,0 +1,251 @@
+use std::{mem, ops::Deref};
+
+use yazi_config::{LAYOUT, YAZI};
+use yazi_dds::Pubsub;
+use yazi_fs::{Entries, FolderStage, file::File, op::FilesOp, stat::{StatKind, StatType}};
+use yazi_macro::log_if_err;
+use yazi_shared::{id::Id, path::{DynPath, PathBufDyn, PathDyn}, url::{AsUrl, Url, UrlBuf, UrlLike}};
+use yazi_watcher::Op;
+use yazi_widgets::{Scrollable, Step};
+
+use crate::MgrProxy;
+
+pub struct Folder {
+	pub file:    File,
+	pub entries: Entries,
+	pub stage:   FolderStage,
+
+	pub offset: usize,
+	pub cursor: usize,
+
+	pub page:  usize,
+	pub trace: Option<PathBufDyn>,
+
+	stale: bool,
+}
+
+impl Deref for Folder {
+	type Target = File;
+
+	fn deref(&self) -> &Self::Target { &self.file }
+}
+
+impl Default for Folder {
+	fn default() -> Self {
+		Self {
+			file:    Default::default(),
+			entries: Entries::new(YAZI.mgr.show_hidden.get()),
+			stage:   Default::default(),
+			offset:  Default::default(),
+			cursor:  Default::default(),
+			page:    Default::default(),
+			trace:   Default::default(),
+			stale:   Default::default(),
+		}
+	}
+}
+
+impl<T: Into<UrlBuf>> From<T> for Folder {
+	fn from(value: T) -> Self {
+		Self { file: File::from_dummy(value, Some(StatType::Dir)), ..Default::default() }
+	}
+}
+
+impl AsUrl for Folder {
+	fn as_url(&self) -> Url<'_> { self.file.as_url() }
+}
+
+impl UrlLike for Folder {}
+
+impl Folder {
+	fn update(&mut self, op: FilesOp) -> bool {
+		let (stage, revision) = (self.stage.clone(), self.entries.revision);
+		match op {
+			FilesOp::Full(ref file, _) => {
+				(self.file, self.stage) = (file.clone(), FolderStage::Loaded);
+			}
+			FilesOp::Part(_, _, ticket) if self.stage.is_loaded() && ticket <= self.entries.ticket() => {
+				return false;
+			}
+			FilesOp::Part(_, ref files, _) if files.is_empty() => {
+				self.stage = FolderStage::Loading;
+			}
+			FilesOp::Part(_, _, ticket) if ticket == self.entries.ticket() => {
+				self.stage = FolderStage::Loading;
+			}
+			FilesOp::Done(_, ticket) if self.stage.is_loaded() && ticket <= self.entries.ticket() => {
+				return false;
+			}
+			FilesOp::Done(ref file, ticket) if ticket == self.entries.ticket() => {
+				(self.file, self.stage) = (file.clone(), FolderStage::Loaded);
+			}
+			FilesOp::Fail(_, ref err) => {
+				self.file.stat.kind.insert(StatKind::DUMMY);
+				self.stage = FolderStage::Failed(err.clone());
+			}
+			_ => {}
+		}
+
+		let mut deleted = vec![];
+		match op {
+			FilesOp::Full(_, files) => self.entries.update_full(files),
+			FilesOp::Part(_, files, ticket) => self.entries.update_part(files, ticket),
+			FilesOp::Done(..) => {}
+			FilesOp::Size(_, sizes) => self.entries.update_size(sizes),
+			FilesOp::Rank(_, ranks) => self.entries.update_rank(ranks),
+			FilesOp::Fail(..) => self.entries.update_fail(),
+
+			FilesOp::Create(_, files) => self.entries.update_create(files),
+			FilesOp::Delete(_, urns) => deleted = self.entries.update_delete(urns),
+			FilesOp::Update(_, files) => _ = self.entries.update_existing(files),
+			FilesOp::Upsert(_, files) => self.entries.update_upsert(files),
+		};
+
+		self.trace.take_if(|_| self.entries.is_empty() && !self.stage.is_loading());
+		self.arrow(-(deleted.into_iter().filter(|&i| i < self.cursor).count() as isize));
+
+		(&stage, revision) != (&self.stage, self.entries.revision)
+	}
+
+	pub fn update_pub(&mut self, tab: Id, op: FilesOp) -> bool {
+		use FilesOp::*;
+		let load = matches!(op, Full(..) | Part(..) | Done(..) | Fail(..));
+		let patch = matches!(op, Create(..) | Delete(..) | Update(..) | Upsert(..));
+
+		if patch {
+			log_if_err!(Pubsub::pub_after_patch(tab, &op));
+		}
+
+		if !self.update(op) {
+			return false;
+		} else if load {
+			log_if_err!(Pubsub::pub_after_load(tab, &self.url, &self.stage));
+		}
+
+		true
+	}
+
+	pub fn arrow(&mut self, step: impl Into<Step>) -> bool {
+		let mut b = if self.entries.is_empty() {
+			(mem::take(&mut self.cursor), mem::take(&mut self.offset)) != (0, 0)
+		} else {
+			self.scroll(step)
+		};
+
+		b |= self.squeeze_offset();
+		self.sync_page(false);
+		b
+	}
+
+	pub fn hover(&mut self, key: PathDyn) -> bool {
+		if key.is_empty() {
+			return self.arrow(0);
+		} else if self.hovered().map(|h| h.key()) == Some(key) {
+			return self.arrow(0);
+		}
+
+		let new = self.entries.position(key).unwrap_or(self.cursor) as isize;
+		let b = self.arrow(new - self.cursor as isize);
+
+		self.retrace();
+		b
+	}
+
+	pub fn repos(&mut self, key: Option<PathDyn>) -> bool {
+		if let Some(k) = key {
+			self.hover(k)
+		} else if let Some(k) = self.trace.take() {
+			let b = self.hover(k.dyn_path());
+			self.trace = Some(k);
+			b
+		} else {
+			self.arrow(0)
+		}
+	}
+
+	pub fn retrace(&mut self) {
+		self.trace = self.hovered().map(|h| h.key().into()).or(self.trace.take());
+	}
+
+	#[inline]
+	pub(crate) fn invalidate(&mut self) { self.stale = true; }
+
+	pub fn take_refresh(&mut self) -> Op {
+		let file = self.file.clone();
+
+		if mem::take(&mut self.stale) {
+			// The directory changed while loading: rebuild it completely.
+			Op::Refresh { file, force: true }
+		} else if self.stage.is_loaded() {
+			// The directory is already loaded: check whether it changed.
+			Op::Refresh { file, force: false }
+		} else if self.entries.ticket() != Id::ZERO {
+			// Loading has already started: do not start another partial load.
+			Op::Refresh { file, force: false }
+		} else {
+			// This is the first load: read the directory in parts.
+			Op::Load(file)
+		}
+	}
+
+	pub fn sync_page(&mut self, force: bool) {
+		let limit = LAYOUT.get().folder_limit();
+		if limit == 0 {
+			return;
+		}
+
+		let new = self.cursor / limit;
+		if mem::replace(&mut self.page, new) != new || force {
+			MgrProxy::update_paged_by(new, &self.url);
+		}
+	}
+
+	fn squeeze_offset(&mut self) -> bool {
+		let old = self.offset;
+		let len = self.entries.len();
+
+		let limit = LAYOUT.get().folder_limit();
+		let scrolloff = (limit / 2).min(YAZI.mgr.scrolloff.get() as usize);
+
+		self.offset = if self.cursor < (self.offset + limit).min(len).saturating_sub(scrolloff) {
+			len.saturating_sub(limit).min(self.offset)
+		} else {
+			len.saturating_sub(limit).min(self.cursor.saturating_sub(limit) + 1 + scrolloff)
+		}
+		.min(self.cursor);
+
+		old != self.offset
+	}
+}
+
+impl Folder {
+	#[inline]
+	pub fn hovered(&self) -> Option<&File> { self.entries.get(self.cursor) }
+
+	#[inline]
+	pub(crate) fn hovered_mut(&mut self) -> Option<&mut File> { self.entries.get_mut(self.cursor) }
+
+	#[inline]
+	pub(crate) fn hovered_url(&self) -> Option<&UrlBuf> { self.hovered().map(|f| &f.url) }
+
+	pub fn paginate(&self, page: usize) -> &[File] {
+		let len = self.entries.len();
+		let limit = LAYOUT.get().folder_limit();
+
+		let start = page.saturating_sub(1).saturating_mul(limit).min(len);
+		let end = page.saturating_add(2).saturating_mul(limit).min(len);
+		&self.entries[start..end]
+	}
+}
+
+impl Scrollable for Folder {
+	fn total(&self) -> usize { self.entries.len() }
+
+	fn limit(&self) -> usize { LAYOUT.get().folder_limit() }
+
+	fn scrolloff(&self) -> usize { (self.limit() / 2).min(YAZI.mgr.scrolloff.get() as usize) }
+
+	fn cursor_mut(&mut self) -> &mut usize { &mut self.cursor }
+
+	fn offset_mut(&mut self) -> &mut usize { &mut self.offset }
+}

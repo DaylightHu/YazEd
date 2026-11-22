@@ -1,0 +1,41 @@
+use std::path::PathBuf;
+
+use clap::{Parser, builder::{StringValueParser, TypedValueParser}};
+use hashbrown::HashSet;
+use yazi_shared::{id::Id, strand::StrandBuf};
+use yazi_shim::CompactString;
+
+#[derive(Debug, Default, Parser)]
+#[command(name = "yazi")]
+#[command(after_help = concat!("Project: ", env!("CARGO_PKG_REPOSITORY")))]
+pub struct Args {
+	/// Set the current working entry
+	#[arg(index = 1, num_args = 1..=9)]
+	pub entries: Vec<StrandBuf>,
+
+	/// Write the cwd on exit to this file
+	#[arg(long)]
+	pub cwd_file:     Option<PathBuf>,
+	/// Write the selected files to this file on open fired
+	#[arg(long)]
+	pub chooser_file: Option<PathBuf>,
+
+	/// Use the specified client ID, must be a globally unique number
+	#[arg(long)]
+	pub(crate) client_id: Option<Id>,
+	/// Report the specified local events to stdout
+	#[arg(long, default_value = "", hide_default_value = true, value_parser = events())]
+	pub local_events:     HashSet<CompactString>,
+	/// Report the specified remote events to stdout
+	#[arg(long, default_value = "", hide_default_value = true, value_parser = events())]
+	pub remote_events:    HashSet<CompactString>,
+
+	/// Print version
+	#[arg(short = 'V', long)]
+	pub(crate) version: bool,
+}
+
+fn events() -> impl TypedValueParser<Value = HashSet<CompactString>> {
+	StringValueParser::new()
+		.map(|s| s.split(',').filter(|s| !s.is_empty()).map(CompactString::new).collect())
+}

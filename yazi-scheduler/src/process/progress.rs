@@ -1,0 +1,87 @@
+use serde::Serialize;
+
+use crate::{Progress, TaskSummary};
+
+// --- Block
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct ProcessProgBlock {
+	pub(crate) state: Option<bool>,
+}
+
+impl From<ProcessProgBlock> for TaskSummary {
+	fn from(value: ProcessProgBlock) -> Self {
+		Self {
+			total_tasks:     value.failed() as u32,
+			succeeded_tasks: 0,
+			failed_tasks:    value.failed() as u32,
+			total_items:     1,
+			succeeded_items: value.success() as u64,
+			failed_items:    value.failed() as u64,
+			percent:         value.percent().map(Into::into),
+		}
+	}
+}
+
+impl Progress for ProcessProgBlock {
+	fn running(self) -> bool { self.state.is_none() }
+
+	fn cooked(self) -> bool { self.state == Some(true) }
+
+	fn failed(self) -> bool { self.state == Some(false) }
+}
+
+// --- Orphan
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct ProcessProgOrphan {
+	pub(crate) state: Option<bool>,
+}
+
+impl From<ProcessProgOrphan> for TaskSummary {
+	fn from(value: ProcessProgOrphan) -> Self {
+		Self {
+			total_tasks:     value.failed() as u32,
+			succeeded_tasks: 0,
+			failed_tasks:    value.failed() as u32,
+			total_items:     1,
+			succeeded_items: value.success() as u64,
+			failed_items:    value.failed() as u64,
+			percent:         value.percent().map(Into::into),
+		}
+	}
+}
+
+impl Progress for ProcessProgOrphan {
+	fn running(self) -> bool { self.state.is_none() }
+
+	fn cooked(self) -> bool { self.state == Some(true) }
+
+	fn failed(self) -> bool { self.state == Some(false) }
+}
+
+// --- Bg
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct ProcessProgBg {
+	pub(crate) state: Option<bool>,
+}
+
+impl From<ProcessProgBg> for TaskSummary {
+	fn from(value: ProcessProgBg) -> Self {
+		Self {
+			total_tasks:     1,
+			succeeded_tasks: value.success() as u32,
+			failed_tasks:    value.failed() as u32,
+			total_items:     1,
+			succeeded_items: value.success() as u64,
+			failed_items:    value.failed() as u64,
+			percent:         value.percent().map(Into::into),
+		}
+	}
+}
+
+impl Progress for ProcessProgBg {
+	fn running(self) -> bool { self.state.is_none() }
+
+	fn cooked(self) -> bool { self.state == Some(true) }
+
+	fn failed(self) -> bool { self.state == Some(false) }
+}

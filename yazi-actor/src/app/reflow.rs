@@ -1,0 +1,61 @@
+use anyhow::Result;
+use mlua::{BorrowedBytes, Value};
+use ratatui_core::layout::{Position, Rect};
+use yazi_actor::lives::Lives;
+use yazi_binding::runtime_scope;
+use yazi_config::LAYOUT;
+use yazi_core::Ctx;
+use yazi_macro::{error, log_if_err, render, succ};
+use yazi_parser::app::ReflowForm;
+use yazi_plugin::LUA;
+use yazi_shared::data::Data;
+
+use crate::Actor;
+
+pub struct Reflow;
+
+impl Actor for Reflow {
+	type Form = ReflowForm;
+
+	const NAME: &str = "reflow";
+
+	fn act(cx: &mut Ctx, form: Self::Form) -> Result<Data> {
+		let Some(size) = cx.term.as_ref().and_then(|t| t.size().ok()) else { succ!() };
+		let mut layout = LAYOUT.get();
+		if cx.active().view.is_some() {
+			layout.preview = Rect::ZERO;
+		}
+		layout.view = Rect::ZERO;
+
+		let result = Lives::scope(cx, |cx| {
+			runtime_scope!(cx, "root", {
+				let comps = (form.reflow)((Position::ORIGIN, size).into())?;
+
+				for v in comps.sequence_values::<Value>() {
+					let Value::Table(t) = v? else {
+						error!("`reflow()` must return a table of components");
+						continue;
+					};
+
+					let id: BorrowedBytes = t.get("_id")?;
+					match &*id {
+						b"current" => layout.current = *t.raw_get::<yazi_binding::elements::Rect>("_area")?,
+						b"preview" => layout.preview = *t.raw_get::<yazi_binding::elements::Rect>("_area")?,
+						b"view" => layout.view = *t.raw_get::<yazi_binding::elements::Rect>("_area")?,
+						b"progress" => layout.progress = *t.raw_get::<yazi_binding::elements::Rect>("_area")?,
+						_ => {}
+					}
+				}
+				Ok(())
+			})
+		});
+
+		if layout != LAYOUT.get() {
+			LAYOUT.set(layout);
+			render!();
+		}
+
+		log_if_err!("Reflowing `Root`", result);
+		succ!();
+	}
+}
