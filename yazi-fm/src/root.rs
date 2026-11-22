@@ -25,7 +25,7 @@ impl Widget for Root<'_> {
 	fn render(self, area: Rect, buf: &mut Buffer) {
 		log_if_err!("Redrawing `Root`", Renderer::new(self.core, "Root").render(area, buf));
 
-		if let Some(view) = &self.core.active().view {
+		if let Some(view) = &mut self.core.active_mut().view {
 			View::render(view, area, buf);
 		} else {
 			mgr::Preview::new(self.core).render(area, buf);

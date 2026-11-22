@@ -473,7 +473,7 @@ impl View {
 		Ok(())
 	}
 
-	pub(super) fn render(view: &DocumentView, area: Rect, buf: &mut Buffer) {
+	pub(super) fn render(view: &mut DocumentView, area: Rect, buf: &mut Buffer) {
 		let area = LAYOUT.get().view.intersection(area);
 		if area.is_empty() {
 			return;
@@ -497,31 +497,41 @@ impl View {
 		}
 
 		let width = area.width as usize;
-		let (top, left) = view.viewport(width, area.height as usize - 1);
-		for (y, row) in (area.y..status_y).zip(top..view.line_count()) {
+		let height = area.height as usize - 1;
+		let (top, left) = view.viewport(width, height);
+		let rows = top..(top + height).min(view.line_count());
+		view.prepare_syntax(rows.clone(), || emit!(Call(relay!(app:view_syntax_ready))));
+		for (y, row) in (area.y..status_y).zip(rows) {
 			let mut col = 0;
 			let mut byte = 0;
 			let highlight = view.match_on_line(row);
+			let mut syntax = view.syntax_styles(row).iter().peekable();
 			for g in graphemes(view.line(row)) {
 				let start = col;
+				let start_byte = byte;
 				col += cell_width(g, col);
+				byte += g.len_bytes();
 				if col > left + width {
 					break;
 				}
-				let matched = highlight.as_ref().is_some_and(|range| {
-					let start = byte;
-					byte += g.len_bytes();
-					start < range.end && byte > range.start
-				});
 				if start < left || col == start {
 					continue;
 				}
+
+				// Style an entire grapheme with the syntax style at its first byte.
+				while syntax.peek().is_some_and(|(end, _)| *end <= start_byte) {
+					syntax.next();
+				}
+				let mut cell_style = syntax.peek().map_or(style, |(_, style)| *style);
+				if highlight.as_ref().is_some_and(|range| start_byte < range.end && byte > range.start) {
+					cell_style = cell_style.patch(THEME.mgr.find_keyword.get().0);
+				}
+
 				let x = area.x + (start - left) as u16;
 				if g.char(0) != '\t' {
-					let cell_style = if matched { THEME.mgr.find_keyword.get().0 } else { style };
 					buf.set_stringn(x, y, grapheme_text(g), col - start, cell_style);
-				} else if matched {
-					buf.set_style(Rect::new(x, y, (col - start) as u16, 1), THEME.mgr.find_keyword.get());
+				} else if cell_style != style {
+					buf.set_style(Rect::new(x, y, (col - start) as u16, 1), cell_style);
 				}
 			}
 		}
