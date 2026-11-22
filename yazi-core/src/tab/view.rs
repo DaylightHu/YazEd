@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fs::Metadata, io::{self, Read}, ops::Range, time::SystemTime};
+use std::{borrow::Cow, fs::Metadata, io::{self, Read}, ops::{Range, RangeInclusive}, time::SystemTime};
 
 use ratatui_core::{buffer::CellWidth, layout::{Position, Rect}, style::Style};
 use ropey::{Rope, RopeSlice};
@@ -27,11 +27,35 @@ pub struct View {
 	left:    usize,
 	search:  Option<Box<Search>>,
 	syntax:  Option<Box<Syntax>>,
+	visual:  Option<ViewSelection>,
 	undo:    Vec<Change>,
 	joining: bool,
 	version: usize,
 	saved:   usize,
 	next:    usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ViewSelection {
+	anchor:   usize,
+	linewise: bool,
+}
+
+pub enum ViewSelectionSpan {
+	Bytes(Range<usize>),
+	Lines(RangeInclusive<usize>),
+}
+
+pub enum ViewSelectionOp {
+	Yank,
+	Delete,
+	Change,
+}
+
+pub struct ViewRegister {
+	text:     String,
+	linewise: bool,
+	crlf:     bool,
 }
 
 #[derive(Clone, Debug)]
@@ -101,6 +125,7 @@ impl View {
 			left: 0,
 			search: None,
 			syntax,
+			visual: None,
 			undo: Vec::new(),
 			joining: false,
 			version: 0,
@@ -172,6 +197,133 @@ impl View {
 			return false;
 		}
 		self.replace(other.min(self.cursor)..other.max(self.cursor), "");
+		true
+	}
+
+	pub fn visual_mode(&self) -> Option<bool> { self.visual.map(|v| v.linewise) }
+
+	pub fn toggle_visual(&mut self, linewise: bool) {
+		self.end_change();
+		self.clear_search_match();
+		self.visual = match self.visual {
+			Some(v) if v.linewise == linewise => None,
+			Some(v) => Some(ViewSelection { linewise, ..v }),
+			None => Some(ViewSelection { anchor: self.cursor, linewise }),
+		};
+	}
+
+	pub fn cancel_visual(&mut self) -> bool { self.visual.take().is_some() }
+
+	pub fn swap_visual_end(&mut self) -> bool {
+		let Some(visual) = &mut self.visual else { return false };
+		std::mem::swap(&mut self.cursor, &mut visual.anchor);
+		self.goal = None;
+		self.update_column();
+		true
+	}
+
+	pub fn visual_span(&self) -> Option<ViewSelectionSpan> {
+		let visual = self.visual?;
+		let start = visual.anchor.min(self.cursor);
+		let end = visual.anchor.max(self.cursor);
+		Some(if visual.linewise {
+			ViewSelectionSpan::Lines(self.text.char_to_line(start)..=self.text.char_to_line(end))
+		} else {
+			let end = boundary(self.text.slice(..), self.text.char_to_byte(end), false);
+			ViewSelectionSpan::Bytes(self.text.char_to_byte(start)..end)
+		})
+	}
+
+	pub fn finish_visual(&mut self, op: ViewSelectionOp) -> Option<ViewRegister> {
+		let span = self.visual_span()?;
+		self.visual = None;
+		let (mut range, lines) = match span {
+			ViewSelectionSpan::Bytes(bytes) => {
+				(self.text.byte_to_char(bytes.start)..self.text.byte_to_char(bytes.end), None)
+			}
+			ViewSelectionSpan::Lines(lines) => (
+				self.text.line_to_char(*lines.start())..self.text.line_to_char(lines.end() + 1),
+				Some(lines),
+			),
+		};
+		let register = (!range.is_empty() || lines.is_some()).then(|| ViewRegister {
+			text:     String::from(self.text.slice(range.clone())),
+			linewise: lines.is_some(),
+			crlf:     self.crlf,
+		});
+
+		match op {
+			ViewSelectionOp::Yank => self.set_cursor(range.start),
+			ViewSelectionOp::Delete => {
+				// The final unterminated line has its separator before it.
+				if let Some(lines) = lines
+					&& *lines.end() == self.line_count() - 1
+					&& *lines.start() > 0
+				{
+					let previous = lines.start() - 1;
+					range.start = self.text.line_to_char(previous) + self.line(previous).len_chars();
+				}
+				if !range.is_empty() {
+					self.replace(range, "");
+				}
+			}
+			ViewSelectionOp::Change => {
+				self.insert = true;
+				let start = range.start;
+				let line_break = lines.is_some_and(|rows| *rows.end() + 1 < self.line_count());
+				if line_break {
+					self.replace(range, self.newline());
+					self.set_cursor(start);
+				} else if !range.is_empty() {
+					self.replace(range, "");
+				}
+			}
+		}
+		register
+	}
+
+	pub fn put_register(&mut self, register: &ViewRegister, before: bool) -> bool {
+		let mut text = Cow::Borrowed(register.text.as_str());
+		if register.crlf != self.crlf && text.contains('\n') {
+			text = if self.crlf {
+				Cow::Owned(text.replace("\r\n", "\n").replace('\n', "\r\n"))
+			} else {
+				Cow::Owned(text.replace("\r\n", "\n"))
+			};
+		}
+
+		let line = self.cursor_line();
+		let (at, first_line) = if !register.linewise {
+			let end = self.text.line_to_char(line) + self.line(line).len_chars();
+			(if before { self.cursor } else { self.adjacent(false).min(end) }, None)
+		} else if self.text.len_chars() == 0 {
+			if text.is_empty() {
+				text = Cow::Borrowed(self.newline());
+			}
+			(0, Some(0))
+		} else if before || line + 1 < self.line_count() {
+			if !text.ends_with('\n') {
+				text.to_mut().push_str(self.newline());
+			}
+			let start = self.text.line_to_char(line + usize::from(!before));
+			(start, Some(start))
+		} else {
+			let last = text.strip_suffix("\r\n").or_else(|| text.strip_suffix('\n')).unwrap_or(&text);
+			text = Cow::Owned(format!("{}{last}", self.newline()));
+			let start = self.text.len_chars();
+			(start, Some(start + self.newline().chars().count()))
+		};
+		if text.is_empty() {
+			return false;
+		}
+
+		self.end_change();
+		self.replace(at..at, &text);
+		if let Some(start) = first_line {
+			self.set_cursor(start);
+		} else {
+			self.horizontal(true);
+		}
 		true
 	}
 
@@ -274,6 +426,12 @@ impl View {
 
 	fn cursor_line(&self) -> usize { self.text.char_to_line(self.cursor) }
 
+	fn set_cursor(&mut self, cursor: usize) {
+		self.cursor = cursor;
+		self.goal = None;
+		self.update_column();
+	}
+
 	fn update_column(&mut self) {
 		self.clear_search_match();
 		let start = self.text.line_to_char(self.cursor_line());
@@ -350,6 +508,8 @@ impl View {
 	}
 
 	pub fn line_count(&self) -> usize { self.text.len_lines() }
+
+	pub fn line_byte(&self, index: usize) -> usize { self.text.line_to_byte(index) }
 
 	pub fn line(&self, index: usize) -> RopeSlice<'_> {
 		let line = self.text.line(index);

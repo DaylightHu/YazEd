@@ -190,7 +190,7 @@ keymap = [
 [view]
 
 keymap = [
-	{ on = "<Esc>",      run = "escape",    desc = "Leave insert mode" },
+	{ on = "<Esc>",      run = "escape",    desc = "Leave Insert or Visual mode" },
 	{ on = "<F6>",       run = "focus",     desc = "Focus the file list" },
 	{ on = ":",          run = "command",   desc = "Open the editor command line" },
 	{ on = "/",          run = "search",    desc = "Search the file forward" },
@@ -200,6 +200,16 @@ keymap = [
 	{ on = "i",          run = "insert",    desc = "Enter insert mode" },
 	{ on = "u",          run = "undo",      desc = "Undo the last change" },
 	{ on = "x",          run = "delete",    desc = "Delete the next character" },
+	{ on = "v",          run = "visual",          desc = "Toggle character selection" },
+	{ on = "V",          run = "visual --linewise", desc = "Toggle line selection" },
+	{ on = "o",          run = "visual_swap",     desc = "Move to the other end of the selection" },
+	{ on = "y",          run = "visual_yank",     desc = "Copy the selection" },
+	{ on = "d",          run = "visual_delete",   desc = "Cut the selection" },
+	{ on = "c",          run = "visual_change",   desc = "Change the selected text" },
+	{ on = "p",          run = "put",             desc = "Paste after the cursor or line" },
+	{ on = "P",          run = "put --before",    desc = "Paste before the cursor or line" },
+	{ on = "0",          run = "home",      desc = "Move to the beginning of the line" },
+	{ on = "$",          run = "end",       desc = "Move to the end of the line" },
 	{ on = "h",          run = "left",      desc = "Move left" },
 	{ on = "l",          run = "right",     desc = "Move right" },
 	{ on = "k",          run = "up",        desc = "Move up" },
