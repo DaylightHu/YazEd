@@ -1,6 +1,7 @@
 //! Build on Debian with `rustc --edition=2024 -O scripts/perf.rs -o target/yazi-perf`.
 //! Run `target/yazi-perf BASELINE [CANDIDATE]` with release binaries.
 //! Use `target/yazi-perf --editor BUILD [BUILD]` for builds with the native editor.
+//! Use `--editor-c` to exercise syntax highlighting with a C source file.
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 compile_error!("This benchmark currently targets Linux x86_64");
@@ -59,8 +60,8 @@ unsafe extern "C" {
 
 fn main() -> Result<()> {
 	let mut args = env::args_os().skip(1).peekable();
-	let editor = args.next_if(|arg| arg == "--editor").is_some();
-	let usage = "Usage: yazi-perf [--editor] BASELINE [CANDIDATE]";
+	let editor = args.next_if(|arg| arg == "--editor" || arg == "--editor-c");
+	let usage = "Usage: yazi-perf [--editor | --editor-c] BASELINE [CANDIDATE]";
 	let baseline = fs::canonicalize(args.next().ok_or(usage)?)?;
 	let candidate = args.next().map(fs::canonicalize).transpose()?;
 	if args.next().is_some() {
@@ -82,8 +83,8 @@ fn main() -> Result<()> {
 		print!("{}", String::from_utf8_lossy(&version.stdout));
 	}
 
-	if editor {
-		return editor_bench(&programs);
+	if let Some(editor) = editor {
+		return editor_bench(&programs, editor == "--editor-c");
 	}
 
 	let ticks = Command::new("getconf").arg("CLK_TCK").output()?;
@@ -146,16 +147,24 @@ fn main() -> Result<()> {
 	Ok(())
 }
 
-fn editor_bench(programs: &[Program]) -> Result<()> {
+fn editor_bench(programs: &[Program], c_source: bool) -> Result<()> {
 	const METRICS: [&str; 4] = ["open_ms", "type_ms", "undo_ms", "save_ms"];
 	let temp = TempDir::new()?;
+	let (name, first, line) = if c_source {
+		(
+			"sample.c",
+			"/* undo-witness */\n",
+			"static const char *message = \"示例内容 編集\"; /* sample */\n",
+		)
+	} else {
+		("sample.txt", "undo-witness\n", "sample text \t示例内容 編集\n")
+	};
 	for target in [4 * 1024, 10 * 1024 * 1024] {
-		let mut text = String::from("undo-witness\n");
-		let line = "sample text \t示例内容 編集\n";
+		let mut text = String::from(first);
 		while text.len() < target {
 			text.push_str(line);
 		}
-		println!("{WIDTH}x{HEIGHT} cells, {} bytes, 48 typed keys", text.len());
+		println!("{name}, {WIDTH}x{HEIGHT} cells, {} bytes, 48 typed keys", text.len());
 		println!("run  build         open_ms   type_ms   undo_ms   save_ms");
 
 		let mut samples = vec![Vec::with_capacity(RUNS); programs.len()];
@@ -164,7 +173,7 @@ fn editor_bench(programs: &[Program]) -> Result<()> {
 				let index = (run + i) % programs.len();
 				let program = &programs[index];
 				let state = temp.0.join(format!("{target}-{}-{run}", program.label));
-				let result = trial_editor(program, &state, &text)?;
+				let result = trial_editor(program, &state, name, &text)?;
 				if run > 0 {
 					print!("{run:>3}  {:<10}", program.label);
 					for value in result {
@@ -192,10 +201,10 @@ fn editor_bench(programs: &[Program]) -> Result<()> {
 	Ok(())
 }
 
-fn trial_editor(program: &Program, state: &Path, text: &str) -> Result<[f64; 4]> {
+fn trial_editor(program: &Program, state: &Path, name: &str, text: &str) -> Result<[f64; 4]> {
 	let fixture = state.join("fixture");
 	fs::create_dir_all(&fixture)?;
-	let path = fixture.join("sample.txt");
+	let path = fixture.join(name);
 	fs::write(&path, text)?;
 
 	// Use the same save and close actions across builds with different default keymaps.
@@ -210,9 +219,10 @@ fn trial_editor(program: &Program, state: &Path, text: &str) -> Result<[f64; 4]>
 	)?;
 
 	let mut terminal = Terminal::start(&program.path, &fixture, state)?;
-	terminal.wait_frame("editor fixture", &[b"sample.txt"])?;
+	terminal.wait_frame("editor fixture", &[name.as_bytes()])?;
 	// Older builds put the mode and file name in a single title.
-	let open = terminal.step(b"\r", "open native editor", &[b"| sample.txt", b"NORMAL"])?;
+	let status = format!("| {name}");
+	let open = terminal.step(b"\r", "open native editor", &[status.as_bytes(), b"NORMAL"])?;
 	terminal.step(b"i", "enter insert mode", &[b"Insert", b"INSERT"])?;
 	let mut keys = [b'x'; 48];
 	keys[47] = b'Z';
@@ -232,7 +242,7 @@ fn trial_editor(program: &Program, state: &Path, text: &str) -> Result<[f64; 4]>
 	// Measure until the replacement is visible, then verify its contents outside the timer.
 	while fs::metadata(&path)?.len() != expected_len {
 		if started.elapsed() >= TIMEOUT {
-			return Err("Timed out waiting for the editor to save sample.txt".into());
+			return Err(format!("Timed out waiting for the editor to save {name}").into());
 		}
 		thread::sleep(Duration::from_millis(1));
 	}

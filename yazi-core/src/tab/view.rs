@@ -1,13 +1,13 @@
 use std::{borrow::Cow, fs::Metadata, io::{self, Read}, ops::Range, time::SystemTime};
 
-use ratatui_core::{buffer::CellWidth, layout::{Position, Rect}};
+use ratatui_core::{buffer::CellWidth, layout::{Position, Rect}, style::Style};
 use ropey::{Rope, RopeSlice};
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 use yazi_macro::impl_data_any;
 use yazi_scheduler::NotifyProxy;
 use yazi_shared::{scope::Scope, url::{UrlBuf, UrlLike}};
 
-use super::search::{Search, SearchHit};
+use super::{search::{Search, SearchHit}, syntax::Syntax};
 
 #[derive(Clone, Debug)]
 pub struct View {
@@ -26,6 +26,7 @@ pub struct View {
 	top:     usize,
 	left:    usize,
 	search:  Option<Box<Search>>,
+	syntax:  Option<Box<Syntax>>,
 	undo:    Vec<Change>,
 	joining: bool,
 	version: usize,
@@ -83,6 +84,7 @@ impl View {
 		let crlf = first.len_chars() >= 2
 			&& first.char(first.len_chars() - 1) == '\n'
 			&& first.char(first.len_chars() - 2) == '\r';
+		let syntax = url.as_local().and_then(|path| Syntax::detect(path, first));
 		Ok(Self {
 			url,
 			focused: true,
@@ -98,6 +100,7 @@ impl View {
 			top: 0,
 			left: 0,
 			search: None,
+			syntax,
 			undo: Vec::new(),
 			joining: false,
 			version: 0,
@@ -184,6 +187,7 @@ impl View {
 		let removed =
 			if range.is_empty() { String::new() } else { String::from(self.text.slice(range.clone())) };
 		let inserted = text.chars().count();
+		self.invalidate_syntax(range.clone(), text);
 		self.text.remove(range);
 		self.text.insert(start, text);
 
@@ -211,7 +215,9 @@ impl View {
 		self.end_change();
 		let Some(change) = self.undo.pop() else { return false };
 		for edit in change.edits.into_iter().rev() {
-			self.text.remove(edit.start..edit.start + edit.inserted);
+			let range = edit.start..edit.start + edit.inserted;
+			self.invalidate_syntax(range.clone(), &edit.removed);
+			self.text.remove(range);
 			self.text.insert(edit.start, &edit.removed);
 		}
 		self.cursor = change.cursor;
@@ -321,6 +327,26 @@ impl View {
 		if let Some(search) = &mut self.search {
 			search.hit = None;
 		}
+	}
+
+	fn invalidate_syntax(&mut self, range: Range<usize>, inserted: &str) {
+		if let Some(syntax) = &mut self.syntax {
+			let row = self.text.char_to_line(range.start);
+			let lines_shifted =
+				row != self.text.char_to_line(range.end) || inserted.as_bytes().contains(&b'\n');
+			syntax.invalidate(row, lines_shifted);
+		}
+	}
+
+	pub fn prepare_syntax(&mut self, rows: Range<usize>, ready: fn()) {
+		if let Some(syntax) = &mut self.syntax {
+			syntax.prepare(&self.text, rows, ready);
+		}
+	}
+
+	/// Style runs ending at exclusive UTF-8 byte offsets within the line.
+	pub fn syntax_styles(&self, row: usize) -> &[(usize, Style)] {
+		self.syntax.as_ref().map_or(&[], |s| s.styles(row))
 	}
 
 	pub fn line_count(&self) -> usize { self.text.len_lines() }

@@ -9,7 +9,9 @@ use yazi_runner::previewer::PeekError;
 use yazi_shared::{replace_to_printable, scope::Scope};
 use yazi_shim::ratatui::LineIter;
 
-static SYNTAXES: LazyLock<SyntaxSet> =
+pub(crate) const MAX_SYNTAX_LINE_BYTES: usize = 5000;
+
+pub(crate) static SYNTAXES: LazyLock<SyntaxSet> =
 	LazyLock::new(|| dumps::from_uncompressed_data(yazi_prebuilt::syntaxes()).unwrap());
 
 pub struct Highlighter {
@@ -57,7 +59,7 @@ impl Highlighter {
 				Err(anyhow!("Binary file"))?;
 			}
 
-			if Self::normalize_control_chars(&mut buf) || buf.len() > 5000 {
+			if Self::normalize_control_chars(&mut buf) || buf.len() > MAX_SYNTAX_LINE_BYTES {
 				h = None;
 			}
 
@@ -117,7 +119,7 @@ impl Highlighter {
 		if self.scope.is_cancelled() { Err(PeekError::Cancelled) } else { Ok(()) }
 	}
 
-	fn load_theme() -> Arc<Theme> {
+	pub(crate) fn load_theme() -> Arc<Theme> {
 		static CACHE: Mutex<Option<(Arc<PathBuf>, Arc<Theme>)>> = Mutex::new(None);
 
 		let path = &*THEME.mgr.syntect_theme.load();
@@ -140,13 +142,7 @@ impl Highlighter {
 		path: &Path,
 		reader: &mut BufReader<std::fs::File>,
 	) -> Result<Option<&'static SyntaxReference>> {
-		let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-		if let Some(s) = SYNTAXES.find_syntax_by_extension(&name) {
-			return Ok(Some(s));
-		}
-
-		let ext = path.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
-		if let Some(s) = SYNTAXES.find_syntax_by_extension(&ext) {
+		if let Some(s) = Self::syntax_for_path(path) {
 			return Ok(Some(s));
 		}
 
@@ -157,6 +153,14 @@ impl Highlighter {
 		} else {
 			Ok(None)
 		}
+	}
+
+	pub(crate) fn syntax_for_path(path: &Path) -> Option<&'static SyntaxReference> {
+		let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+		SYNTAXES.find_syntax_by_extension(&name).or_else(|| {
+			let ext = path.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
+			SYNTAXES.find_syntax_by_extension(&ext)
+		})
 	}
 
 	#[inline(always)]
@@ -185,28 +189,29 @@ impl Highlighter {
 
 impl Highlighter {
 	fn to_line_widget<'a>(regions: Vec<(highlighting::Style, &'a str)>) -> Line<'a> {
-		Line::from_iter(regions.into_iter().map(|(style, s)| {
-			let mut modifier = ratatui_core::style::Modifier::empty();
-			if style.font_style.contains(highlighting::FontStyle::BOLD) {
-				modifier |= ratatui_core::style::Modifier::BOLD;
-			}
-			if style.font_style.contains(highlighting::FontStyle::ITALIC) {
-				modifier |= ratatui_core::style::Modifier::ITALIC;
-			}
-			if style.font_style.contains(highlighting::FontStyle::UNDERLINE) {
-				modifier |= ratatui_core::style::Modifier::UNDERLINED;
-			}
+		Line::from_iter(regions.into_iter().map(|(style, s)| Span::styled(s, Self::to_style(style))))
+	}
 
-			Span {
-				content: s.into(),
-				style:   ratatui_core::style::Style {
-					fg: Self::to_ansi_color(style.foreground),
-					// bg: Self::to_ansi_color(style.background),
-					add_modifier: modifier,
-					..Default::default()
-				},
-			}
-		}))
+	pub(crate) fn to_style(style: highlighting::Style) -> ratatui_core::style::Style {
+		use highlighting::FontStyle;
+		use ratatui_core::style::{Modifier, Style};
+
+		let mut modifier = Modifier::empty();
+		if style.font_style.contains(FontStyle::BOLD) {
+			modifier |= Modifier::BOLD;
+		}
+		if style.font_style.contains(FontStyle::ITALIC) {
+			modifier |= Modifier::ITALIC;
+		}
+		if style.font_style.contains(FontStyle::UNDERLINE) {
+			modifier |= Modifier::UNDERLINED;
+		}
+
+		Style {
+			fg: Self::to_ansi_color(style.foreground),
+			add_modifier: modifier,
+			..Default::default()
+		}
 	}
 
 	// Copied from https://github.com/sharkdp/bat/blob/master/src/terminal.rs

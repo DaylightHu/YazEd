@@ -1,7 +1,7 @@
 use anyhow::Result;
 use yazi_actor::act;
 use yazi_core::Ctx;
-use yazi_macro::succ;
+use yazi_macro::{render, succ};
 use yazi_shared::{Layer, data::Data, event::ActionCow};
 use yazi_widgets::input::InputMode;
 
@@ -61,6 +61,7 @@ impl<'a> Executor<'a> {
 		on!(quit);
 
 		match &*action.name {
+			"view_syntax_ready" => succ!(render!(cx.tab().view.is_some())),
 			"resize" => act!(app:resize, cx, crate::Root::reflow as fn(_) -> _),
 			"resume" => act!(app:resume, cx, crate::Root::reflow as fn(_) -> _),
 			_ => succ!(),
