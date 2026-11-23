@@ -1,7 +1,7 @@
 use anyhow::Result;
 use yazi_core::Ctx;
 use yazi_emulator::{EMULATOR, Mux};
-use yazi_macro::{log_if_err, succ};
+use yazi_macro::{log_if_err, render, succ};
 use yazi_proxy::AppProxy;
 use yazi_shared::data::Data;
 use yazi_term::event::Report as TermReport;
@@ -21,10 +21,18 @@ impl Actor for Report {
 		}
 
 		let old_light = EMULATOR.light();
+		let old_cursor = EMULATOR.cursor_color.get();
+		let had_graphics = EMULATOR.supports_graphical_cursor();
 		EMULATOR.apply(&report);
 
 		if EMULATOR.light() != old_light {
 			log_if_err!(act!(app:theme, cx));
+		}
+		let graphics = EMULATOR.supports_graphical_cursor();
+		if graphics != had_graphics
+			|| graphics && (EMULATOR.cursor_color.get() != old_cursor || report.is_cell_pixel_size())
+		{
+			render!();
 		}
 
 		if !report.is_da_1() {

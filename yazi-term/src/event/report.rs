@@ -11,6 +11,7 @@ pub enum Report {
 	XtVersion(CompactString),
 	CellPixelSize { width: u16, height: u16 },
 	BackgroundColor([u16; 3]),
+	CursorColor([u16; 3]),
 	ColorScheme(bool),
 	KittyGraphics { id: u32, ok: bool },
 	Clipboard(bool),

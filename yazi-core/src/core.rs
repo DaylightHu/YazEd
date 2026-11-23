@@ -19,7 +19,8 @@ pub struct Core {
 	pub notify:  Notify,
 	pub term:    Option<Raterm>,
 
-	pub view_register: Option<ViewRegister>,
+	pub view_register:    Option<ViewRegister>,
+	pub graphical_cursor: bool,
 }
 
 impl Core {
@@ -36,7 +37,8 @@ impl Core {
 			notify:  Default::default(),
 			term:    Some(term),
 
-			view_register: None,
+			view_register:    None,
+			graphical_cursor: false,
 		}
 	}
 

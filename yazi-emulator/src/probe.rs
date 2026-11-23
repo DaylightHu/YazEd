@@ -6,7 +6,7 @@ use yazi_macro::{error, writef};
 use yazi_shared::id::{Id, Ids};
 use yazi_shim::cell::SyncCell;
 use yazi_term::{TERM, event::Event, stream::EventStream};
-use yazi_tty::{TTY, sequence::{EraseLine, ProbeClipboard, RequestBgColor, RequestCellPixelSize, RequestColorScheme, RequestCsiU, RequestCursorBlink, RequestCursorStyle, RequestDA1, RequestKgp, RequestKgpShm, RequestXtVersion, RestoreCursor, SaveCursor, TmuxPassthrough}};
+use yazi_tty::{TTY, sequence::{EraseLine, ProbeClipboard, RequestBgColor, RequestCellPixelSize, RequestColorScheme, RequestCsiU, RequestCursorBlink, RequestCursorColor, RequestCursorStyle, RequestDA1, RequestKgp, RequestKgpShm, RequestXtVersion, RestoreCursor, SaveCursor, TmuxPassthrough}};
 
 use crate::{Emulator, Mux};
 
@@ -105,7 +105,7 @@ impl Emulator {
 		let mux = self.mux.get().is_some();
 		writef!(
 			TTY.writer(),
-			"{SaveCursor}{RequestColorScheme}{RequestBgColor}{RequestCursorBlink}{RequestCursorStyle}{}{}{}{RequestCellPixelSize}{ProbeClipboard}{RequestCsiU}{}{}{RestoreCursor}",
+			"{SaveCursor}{RequestColorScheme}{RequestBgColor}{RequestCursorColor}{RequestCursorBlink}{RequestCursorStyle}{}{}{}{RequestCellPixelSize}{ProbeClipboard}{RequestCsiU}{}{}{RestoreCursor}",
 			TmuxPassthrough(RequestXtVersion, mux),
 			TmuxPassthrough(RequestKgp, mux),
 			TmuxPassthrough(RequestKgpShm::new(), mux),
