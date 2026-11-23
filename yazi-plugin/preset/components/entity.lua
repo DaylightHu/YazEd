@@ -112,7 +112,7 @@ function Entity:style()
 	elseif self._file.in_preview then
 		return s:patch(th.indicator.preview)
 	else
-		return s:patch(th.indicator.parent)
+		return s
 	end
 end
 
