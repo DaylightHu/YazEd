@@ -5295,8 +5295,10 @@ name = "yazi-fm"
 version = "26.9.1"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "clap_complete",
+ "image",
  "log",
  "mlua",
  "ratatui-core",

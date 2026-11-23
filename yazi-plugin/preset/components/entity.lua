@@ -102,6 +102,9 @@ function Entity:style()
 	if not self._file.is_hovered then
 		return s
 	elseif self._file.in_current then
+		if cx.active.view_focused then
+			return s:underline(false)
+		end
 		return s:patch(th.indicator.current)
 	elseif self._file.in_preview then
 		return s:patch(th.indicator.preview)

@@ -18,6 +18,7 @@ use crate::{app::App, root::Root};
 impl App {
 	pub(crate) fn render(&mut self) -> Result<Data> {
 		self.last_render = Instant::now();
+		self.next_render = None;
 		NEED_RENDER.store(0, Ordering::Relaxed);
 
 		if self.need_render == /* partial */ 1 {
@@ -31,6 +32,9 @@ impl App {
 		let collision = ADAPTOR.collision.replace(false);
 		let preview_rect = LAYOUT.get().preview;
 		let clear = std::mem::take(&mut self.clear_on_render);
+		if clear || self.need_render == /* force */ 3 {
+			self.cursor_trail.reset();
+		}
 		let preserve_image = clear && ADAPTOR.shown_area().is_some();
 		Self::scope(&mut self.core, term, |core, term| {
 			if clear && !preserve_image {
@@ -55,7 +59,7 @@ impl App {
 			act!(mgr:peek, cx)?; // Reload preview if layout changed
 		}
 
-		guard.finish(self.core.cursor());
+		self.finish_render(guard);
 		succ!();
 	}
 
@@ -75,8 +79,14 @@ impl App {
 			})
 		})?;
 
-		guard.finish(self.core.cursor());
+		self.finish_render(guard);
 		succ!();
+	}
+
+	fn finish_render(&mut self, guard: SyncGuard) {
+		let cursor = self.core.cursor();
+		self.cursor_trail.track(&self.core, cursor, Instant::now());
+		guard.finish(cursor);
 	}
 
 	fn render_forcibly(buffer: &mut Buffer) {
