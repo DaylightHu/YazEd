@@ -1,13 +1,14 @@
-use std::{sync::atomic::Ordering, time::{Duration, Instant}};
+use std::{future::pending, sync::atomic::Ordering, time::{Duration, Instant}};
 
 use anyhow::Result;
-use tokio::{select, time::sleep};
+use tokio::{select, time::sleep_until};
 use yazi_actor::act;
 use yazi_core::{Core, Ctx};
 use yazi_macro::{render, succ};
 use yazi_shared::{data::Data, event::{Event, EventRx, NEED_RENDER}};
 use yazi_tui::Raterm;
 
+use super::{SyncGuard, cursor_trail::CursorTrail};
 use crate::Dispatcher;
 
 pub(crate) struct App {
@@ -16,7 +17,8 @@ pub(crate) struct App {
 	pub(super) need_render:     u8,
 	pub(super) clear_on_render: bool,
 	pub(crate) last_render:     Instant,
-	next_render:                Option<Duration>,
+	pub(super) next_render:     Option<Instant>,
+	pub(super) cursor_trail:    CursorTrail,
 }
 
 impl App {
@@ -28,6 +30,7 @@ impl App {
 			clear_on_render: false,
 			last_render:     Instant::now(),
 			next_render:     None,
+			cursor_trail:    CursorTrail::new(),
 		}
 	}
 
@@ -38,19 +41,21 @@ impl App {
 		app.bootstrap()?;
 
 		loop {
-			if let Some(t) = app.next_render.take() {
-				select! {
-					_ = sleep(t) => {
-						app.render()?;
-					}
-					r = app.drain(&mut rx) => if !r? {
-						break;
-					}
+			select! {
+				_ = wait_until(app.next_render) => {
+					app.render()?;
 				}
-			} else if !app.drain(&mut rx).await? {
-				break;
+				_ = wait_until(app.cursor_trail.deadline()) => {
+					let guard = SyncGuard::enter();
+					app.cursor_trail.draw(Instant::now());
+					guard.finish(None);
+				}
+				result = app.drain(&mut rx) => if !result? {
+					break;
+				}
 			}
 		}
+		app.cursor_trail.reset();
 		Ok(())
 	}
 
@@ -79,6 +84,9 @@ impl App {
 		let tab_bar = self.core.mgr.tabs.len() > 1;
 		Dispatcher::new(self).dispatch(event);
 
+		if self.core.term.is_none() {
+			self.cursor_trail.reset();
+		}
 		let now_viewing = self.core.active().view.is_some();
 		if viewing != now_viewing || (now_viewing && tab_bar != (self.core.mgr.tabs.len() > 1)) {
 			let cx = &mut Ctx::active(&mut self.core);
@@ -94,11 +102,20 @@ impl App {
 			return Ok(());
 		}
 
-		self.next_render = Duration::from_millis(10).checked_sub(self.last_render.elapsed());
-		if self.next_render.is_none() {
+		let deadline = self.last_render + Duration::from_millis(10);
+		if deadline > Instant::now() {
+			self.next_render = Some(deadline);
+		} else {
 			self.render()?;
 		}
 
 		Ok(())
+	}
+}
+
+async fn wait_until(deadline: Option<Instant>) {
+	match deadline {
+		Some(deadline) => sleep_until(deadline.into()).await,
+		None => pending().await,
 	}
 }
