@@ -77,6 +77,7 @@ impl UserData for Ctx {
 				b"input" => reuse!(input, super::Input::make(&me.input)),
 				b"which" => reuse!(which, super::Which::make(&me.which)),
 				b"layer" => reuse!(layer, Ok::<_, mlua::Error>(me.layer())),
+				b"graphical_cursor" => Value::Boolean(me.core.graphical_cursor),
 				_ => Value::Nil,
 			})
 		});

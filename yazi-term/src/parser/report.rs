@@ -87,7 +87,10 @@ impl Parser {
 		// Dynamic background-color report:
 		//   `OSC 11 ; rgb:Pr/Pg/Pb ST|BEL` (`\x1b]11;rgb:...`)
 		if let Some(body) = seq.strip_prefix(b"\x1b]11;rgb:") {
-			return Ok(Event::Report(Report::BackgroundColor(parse_bg_rgb(body)?)));
+			return Ok(Event::Report(Report::BackgroundColor(parse_rgb(body)?)));
+		}
+		if let Some(body) = seq.strip_prefix(b"\x1b]12;rgb:") {
+			return Ok(Event::Report(Report::CursorColor(parse_rgb(body)?)));
 		}
 
 		bail!()
@@ -109,7 +112,7 @@ impl Parser {
 	}
 }
 
-fn parse_bg_rgb(body: &[u8]) -> Result<[u16; 3]> {
+fn parse_rgb(body: &[u8]) -> Result<[u16; 3]> {
 	let mut it = str::from_utf8(body)?.split('/');
 	let mut rgb = [0; 3];
 

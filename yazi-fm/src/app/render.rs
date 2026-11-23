@@ -9,7 +9,7 @@ use yazi_config::LAYOUT;
 use yazi_core::{Core, Ctx};
 use yazi_macro::succ;
 use yazi_plugin::LUA;
-use yazi_shared::{data::Data, event::NEED_RENDER};
+use yazi_shared::{Layer, data::Data, event::NEED_RENDER};
 use yazi_tui::Raterm;
 
 use super::SyncGuard;
@@ -36,10 +36,12 @@ impl App {
 			self.cursor_trail.reset();
 		}
 		let preserve_image = clear && ADAPTOR.shown_area().is_some();
+		let cursor_trail = &mut self.cursor_trail;
 		Self::scope(&mut self.core, term, |core, term| {
 			if clear && !preserve_image {
 				term.clear()?;
 			}
+			core.graphical_cursor = cursor_trail.track(core, Instant::now());
 			term.draw(|f| {
 				f.render_widget(Root::new(core), f.area());
 				if self.need_render == /* force */ 3 || preserve_image {
@@ -84,9 +86,14 @@ impl App {
 	}
 
 	fn finish_render(&mut self, guard: SyncGuard) {
-		let cursor = self.core.cursor();
-		self.cursor_trail.track(&self.core, cursor, Instant::now());
-		guard.finish(cursor);
+		if self.core.graphical_cursor && matches!(self.core.layer(), Layer::Mgr | Layer::View) {
+			self.cursor_trail.draw(Instant::now());
+			guard.finish(None);
+		} else {
+			self.core.graphical_cursor = false;
+			self.cursor_trail.reset();
+			guard.finish(self.core.cursor());
+		}
 	}
 
 	fn render_forcibly(buffer: &mut Buffer) {

@@ -344,7 +344,7 @@ impl Kgp {
 				write!(w, "{s}")?;
 			}
 
-			write!(w, "{ResetAttrs}{START}_Gq=2,a=d,d=A{ESCAPE}\\{CLOSE}")?;
+			write!(w, "{ResetAttrs}{START}_Gq=2,a=d,d=I,i={}{ESCAPE}\\{CLOSE}", kgp_id())?;
 			Ok(())
 		})
 	}

@@ -26,6 +26,7 @@ pub struct Emulator {
 	osc_5522:             SyncCell<bool>,
 	pub cursor_blink:     SyncCell<bool>,
 	pub cursor_shape:     SyncCell<Option<u8>>,
+	pub cursor_color:     SyncCell<Option<[u16; 3]>>,
 	pub mux:              SyncCell<Option<Mux>>,
 
 	pub probe: Probe,
@@ -79,6 +80,7 @@ impl Emulator {
 			Report::CsiU(flags) => self.csi_u.set(Some(*flags)),
 			Report::CursorBlink(blink) => self.cursor_blink.set(*blink),
 			Report::CursorShape(shape) => self.cursor_shape.set(Some(*shape)),
+			Report::CursorColor(rgb) => self.cursor_color.set(Some(*rgb)),
 			Report::Da1(attrs) => self.sixel.set(attrs.contains(&4)),
 			Report::XtVersion(version) => {
 				self.version.store(version.to_string().into());

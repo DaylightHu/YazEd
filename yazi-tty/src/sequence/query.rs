@@ -31,6 +31,13 @@ impl Display for RequestBgColor {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("\x1b]11;?\x07") }
 }
 
+/// Request cursor color via OSC 12
+pub struct RequestCursorColor;
+
+impl Display for RequestCursorColor {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("\x1b]12;?\x07") }
+}
+
 /// Request device attributes DA1
 pub struct RequestDA1;
 

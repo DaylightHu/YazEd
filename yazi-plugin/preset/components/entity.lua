@@ -105,6 +105,9 @@ function Entity:style()
 		if cx.active.view_focused then
 			return s:underline(false)
 		end
+		if cx.graphical_cursor then
+			return s
+		end
 		return s:patch(th.indicator.current)
 	elseif self._file.in_preview then
 		return s:patch(th.indicator.preview)

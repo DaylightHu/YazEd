@@ -6,6 +6,7 @@ use yazi_actor::act;
 use yazi_core::{Core, Ctx};
 use yazi_macro::{render, succ};
 use yazi_shared::{data::Data, event::{Event, EventRx, NEED_RENDER}};
+use yazi_term::event::Event as TermEvent;
 use yazi_tui::Raterm;
 
 use super::{SyncGuard, cursor_trail::CursorTrail};
@@ -80,6 +81,10 @@ impl App {
 	}
 
 	fn dispatch(&mut self, event: Event) -> Result<()> {
+		if self.core.graphical_cursor && matches!(event, Event::Term(TermEvent::Resize(_))) {
+			self.cursor_trail.reset();
+			render!();
+		}
 		let viewing = self.core.active().view.is_some();
 		let tab_bar = self.core.mgr.tabs.len() > 1;
 		Dispatcher::new(self).dispatch(event);

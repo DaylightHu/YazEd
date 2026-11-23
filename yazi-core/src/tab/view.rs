@@ -556,6 +556,17 @@ impl View {
 			y: area.y + (self.cursor_line() - top) as u16,
 		})
 	}
+
+	pub fn cursor_cells(&self) -> usize {
+		let row = self.cursor_line();
+		let line = self.line(row);
+		let start = self.text.char_to_byte(self.cursor) - self.line_byte(row);
+		if start >= line.len_bytes() || line.byte(start) == b'\t' {
+			return 1;
+		}
+		let end = boundary(line, start, false);
+		cell_width(line.byte_slice(start..end), self.column).max(1)
+	}
 }
 
 struct TextReader<'a, R> {
