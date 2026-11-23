@@ -2,10 +2,10 @@ use std::{env, io::Write, time::{Duration, Instant}};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
-use ratatui_core::layout::Rect;
+use ratatui_core::layout::{Position, Rect};
 use yazi_config::LAYOUT;
 use yazi_core::Core;
-use yazi_emulator::{Brand, Dimension, EMULATOR};
+use yazi_emulator::{Dimension, EMULATOR};
 use yazi_shared::{Layer, id::Id};
 use yazi_tty::{TTY, sequence::{MoveTo, RestoreCursorPos, SaveCursorPos}};
 
@@ -131,6 +131,12 @@ impl CursorTrail {
 
 	pub(super) fn deadline(&self) -> Option<Instant> { self.deadline }
 
+	pub(super) fn position(&self) -> Option<Position> {
+		let (scene, _) = self.target?;
+		let head = self.shown?;
+		Some(Position { x: (head.x / scene.cell.0) as u16, y: (head.y / scene.cell.1) as u16 })
+	}
+
 	pub(super) fn reset(&mut self) {
 		self.target = None;
 		self.shown = None;
@@ -173,11 +179,7 @@ impl CursorTrail {
 	}
 
 	fn focus(&self, core: &Core) -> Option<(Scene, PixelRect)> {
-		if !self.enabled
-			|| EMULATOR.brand.get() != Brand::Kitty
-			|| !EMULATOR.kgp.get()
-			|| EMULATOR.mux.get().is_some()
-		{
+		if !self.enabled || !EMULATOR.supports_graphical_cursor() {
 			return None;
 		}
 

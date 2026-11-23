@@ -148,6 +148,12 @@ impl Emulator {
 		self.brand.get() == Brand::Tmux && self.mux.get().is_none()
 	}
 
+	pub fn supports_graphical_cursor(&self) -> bool {
+		self.brand.get() == Brand::Kitty
+			&& self.mux.get().is_none()
+			&& (self.kgp.get() || self.version.load().starts_with("kitty("))
+	}
+
 	fn force_16t((w, h): (u16, u16)) -> bool {
 		if w == 0 || h == 0 {
 			return false;

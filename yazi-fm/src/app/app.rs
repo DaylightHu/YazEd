@@ -9,7 +9,7 @@ use yazi_shared::{data::Data, event::{Event, EventRx, NEED_RENDER}};
 use yazi_term::event::Event as TermEvent;
 use yazi_tui::Raterm;
 
-use super::{SyncGuard, cursor_trail::CursorTrail};
+use super::{FrameCursor, SyncGuard, cursor_trail::CursorTrail};
 use crate::Dispatcher;
 
 pub(crate) struct App {
@@ -49,7 +49,7 @@ impl App {
 				_ = wait_until(app.cursor_trail.deadline()) => {
 					let guard = SyncGuard::enter();
 					app.cursor_trail.draw(Instant::now());
-					guard.finish(None);
+					guard.finish(app.cursor_trail.position().map_or(FrameCursor::Hidden, FrameCursor::Graphical));
 				}
 				result = app.drain(&mut rx) => if !result? {
 					break;

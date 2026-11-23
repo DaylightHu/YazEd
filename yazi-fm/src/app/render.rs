@@ -12,7 +12,7 @@ use yazi_plugin::LUA;
 use yazi_shared::{Layer, data::Data, event::NEED_RENDER};
 use yazi_tui::Raterm;
 
-use super::SyncGuard;
+use super::{FrameCursor, SyncGuard};
 use crate::{app::App, root::Root};
 
 impl App {
@@ -88,11 +88,12 @@ impl App {
 	fn finish_render(&mut self, guard: SyncGuard) {
 		if self.core.graphical_cursor && matches!(self.core.layer(), Layer::Mgr | Layer::View) {
 			self.cursor_trail.draw(Instant::now());
-			guard.finish(None);
+			guard
+				.finish(self.cursor_trail.position().map_or(FrameCursor::Hidden, FrameCursor::Graphical));
 		} else {
 			self.core.graphical_cursor = false;
 			self.cursor_trail.reset();
-			guard.finish(self.core.cursor());
+			guard.finish(self.core.cursor().into());
 		}
 	}
 
