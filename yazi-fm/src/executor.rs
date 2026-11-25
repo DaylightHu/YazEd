@@ -30,11 +30,8 @@ impl<'a> Executor<'a> {
 			Layer::Which => self.which(action),
 			Layer::Notify => self.notify(action),
 			Layer::View => {
-				if action.scope.is_cancelled() {
-					succ!();
-				}
 				let cx = &mut Ctx::new(&action, &mut self.app.core)?;
-				View::action(cx, action, &mut self.app.lsp)
+				View::action(cx, action)
 			}
 		}
 	}

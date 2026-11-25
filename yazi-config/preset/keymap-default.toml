@@ -199,7 +199,6 @@ keymap = [
 	{ on = "N",          run = "repeat_search --reverse", desc = "Repeat the last search in reverse" },
 	{ on = "i",          run = "insert",    desc = "Enter insert mode" },
 	{ on = "a",          run = "insert --after", desc = "Insert after the cursor" },
-	{ on = [ "g", "d" ], run = "definition", desc = "Preview the definition at the cursor" },
 	{ on = "u",          run = "undo",      desc = "Undo the last change" },
 	{ on = "x",          run = "delete",    desc = "Delete the next character" },
 	{ on = "v",          run = "visual",          desc = "Toggle character selection" },
