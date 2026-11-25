@@ -7,7 +7,7 @@ use yazi_fs::file::File;
 use yazi_shared::{id::{Id, Ids}, scope::{Scope, ScopeLike}, url::{UrlBuf, UrlLike}};
 use yazi_term::TERM;
 
-use super::{Backstack, Finder, Folder, History, Mode, Preference, Preview, PreviewMut, View, ViewReturn};
+use super::{Backstack, Finder, Folder, History, Mode, Preference, Preview, PreviewMut, View};
 use crate::{spot::{Spot, SpotMut}, tab::Selected};
 
 pub struct Tab {
@@ -27,7 +27,6 @@ pub struct Tab {
 	pub finder:    Option<Finder>,
 	pub view:      Option<View>,
 	pub view_load: Option<Scope>,
-	pub view_returns: Vec<ViewReturn>,
 }
 
 impl Default for Tab {
@@ -53,7 +52,6 @@ impl Default for Tab {
 			finder: Default::default(),
 			view: None,
 			view_load: None,
-			view_returns: Vec::new(),
 
 			scope,
 		}
@@ -61,11 +59,6 @@ impl Default for Tab {
 }
 
 impl Tab {
-	pub fn protect_views(&self) -> bool {
-		self.view.as_ref().is_some_and(View::protect)
-			|| self.view_returns.iter().any(|entry| matches!(entry, ViewReturn::Document(view) if view.protect()))
-	}
-
 	pub fn shutdown(&mut self) {
 		self.scope.cancel();
 		self.preview_mut().reset();

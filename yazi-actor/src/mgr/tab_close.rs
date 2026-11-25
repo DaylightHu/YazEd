@@ -18,7 +18,7 @@ impl Actor for TabClose {
 		if len < 2 || form.idx >= len {
 			succ!();
 		}
-		if cx.tabs()[form.idx].protect_views() {
+		if cx.tabs()[form.idx].view.as_ref().is_some_and(|view| view.protect()) {
 			succ!();
 		}
 
