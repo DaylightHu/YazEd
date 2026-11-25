@@ -11,9 +11,11 @@ use yazi_tui::Raterm;
 
 use super::{FrameCursor, SyncGuard, cursor_trail::CursorTrail};
 use crate::Dispatcher;
+use crate::assist::Assist;
 
 pub(crate) struct App {
 	pub(crate) core: Core,
+	pub(crate) assist: Assist,
 
 	pub(super) need_render:     u8,
 	pub(super) clear_on_render: bool,
@@ -26,6 +28,7 @@ impl App {
 	fn make(term: Raterm) -> Self {
 		Self {
 			core: Core::make(term),
+			assist: Assist::new(),
 
 			need_render:     0,
 			clear_on_render: false,
@@ -88,6 +91,7 @@ impl App {
 		let viewing = self.core.active().view.is_some();
 		let tab_bar = self.core.mgr.tabs.len() > 1;
 		Dispatcher::new(self).dispatch(event);
+		self.assist.sync(&mut self.core);
 
 		if self.core.term.is_none() {
 			self.cursor_trail.reset();

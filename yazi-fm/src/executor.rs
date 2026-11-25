@@ -38,7 +38,7 @@ impl<'a> Executor<'a> {
 
 	fn null(&mut self, _action: ActionCow) -> Result<Data> { succ!() }
 
-	fn app(&mut self, action: ActionCow) -> Result<Data> {
+	fn app(&mut self, mut action: ActionCow) -> Result<Data> {
 		let cx = &mut Ctx::new(&action, &mut self.app.core)?;
 
 		macro_rules! on {
@@ -61,6 +61,20 @@ impl<'a> Executor<'a> {
 		on!(quit);
 
 		match &*action.name {
+			"view_assist_ready" => {
+				let Some(output): Option<crate::assist::Output> = action.take_any("output") else { succ!() };
+				let Some(view) = &mut cx.tab_mut().view else { succ!() };
+				if view.focused && view.insert && view.assist_key() == Some(output.key) {
+					let assist = view.assist.as_mut().unwrap();
+					if assist.dismissed { succ!(); }
+					assist.items = output.items;
+					assist.signature = output.signature;
+					assist.status = output.status;
+					assist.selected = 0;
+					render!();
+				}
+				succ!();
+			}
 			"view_syntax_ready" => succ!(render!(cx.tab().view.is_some())),
 			"resize" => act!(app:resize, cx, crate::Root::reflow as fn(_) -> _),
 			"resume" => act!(app:resume, cx, crate::Root::reflow as fn(_) -> _),
