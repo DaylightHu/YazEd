@@ -168,14 +168,18 @@ impl Session {
 			&& self.config.initialization_options == config.initialization_options
 	}
 
+	pub(super) async fn prepare_document(&mut self, path: &Path, source: &ViewSource) -> Result<String> {
+		let uri = Url::from_file_path(path).map_err(|_| anyhow::anyhow!("Invalid source path"))?.to_string();
+		self.sync_document(&uri, source).await?;
+		Ok(uri)
+	}
+
 	pub(super) async fn definition(
 		&mut self,
 		path: &Path,
 		source: &ViewSource,
 	) -> Result<(Value, PositionEncoding)> {
-		let uri =
-			Url::from_file_path(path).map_err(|_| anyhow::anyhow!("Invalid source path"))?.to_string();
-		self.sync_document(&uri, source).await?;
+		let uri = self.prepare_document(path, source).await?;
 		let (line, character) = source.cursor_position(self.encoding);
 		let params = json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } });
 		let deadline = tokio::time::Instant::now() + Duration::from_secs(25);

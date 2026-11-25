@@ -165,7 +165,7 @@ impl<'a> Executor<'a> {
 
 		match action.name.as_ref() {
 			"view_open" => View::open(cx, action),
-			"view_opened" => View::opened(cx, action),
+			"view_opened" => View::opened(cx, action, &mut self.app.lsp),
 			// Help
 			"help" => act!(help:toggle, cx, Layer::Mgr),
 			// Plugin

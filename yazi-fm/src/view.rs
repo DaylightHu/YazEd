@@ -108,9 +108,9 @@ impl View {
 		Some(document)
 	}
 
-	pub(super) fn opened(cx: &mut Ctx, mut action: ActionCow) -> Result<Data> {
+	pub(super) fn opened(cx: &mut Ctx, mut action: ActionCow, lsp: &mut Option<Lsp>) -> Result<Data> {
 		cx.tab_mut().view_load = None;
-		if let Some(view) = action.take_any("view") {
+		if let Some(mut view) = action.take_any("view") {
 			if cx.tab().protect_views() {
 				succ!();
 			}
@@ -118,6 +118,7 @@ impl View {
 				cx.preview_mut().reset();
 			}
 			cx.tab_mut().view_returns.clear();
+			Lsp::warm_on_open(&mut view, lsp);
 			cx.tab_mut().view = Some(view);
 			succ!(render!());
 		}

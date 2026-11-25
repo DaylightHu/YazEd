@@ -486,7 +486,7 @@ struct Terminal {
 impl Terminal {
 	fn start(binary: &Path, fixture: &Path, state: &Path) -> Result<Self> {
 		let mut command = Command::new(binary);
-		command.arg(fixture).env("TERM", "xterm-256color").env_remove("TERM_PROGRAM");
+		command.arg(fixture).env("TERM", "xterm-256color").env_remove("TERM_PROGRAM").env_remove("YAZED_LSP_WARMUP");
 		for (name, _) in env::vars_os() {
 			let text = name.to_string_lossy();
 			if ["YAZI_", "KITTY_", "TMUX", "STY"].iter().any(|prefix| text.starts_with(prefix)) {

@@ -1,9 +1,9 @@
 use std::{
 	collections::HashMap,
-	fs,
+	env, fs,
 	io::{BufRead, BufReader},
 	path::{Path, PathBuf},
-	sync::{Arc, Mutex},
+	sync::{Arc, LazyLock, Mutex},
 	time::Duration,
 };
 
@@ -12,15 +12,18 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::timeout;
 use url::Url;
-use yazi_core::tab::{DefinitionTarget, PositionEncoding, ViewSource};
+use yazi_core::tab::{DefinitionTarget, PositionEncoding, View, ViewSource};
 use yazi_fs::Xdg;
-use yazi_shared::url::UrlLike;
+use yazi_shared::url::{UrlBuf, UrlLike};
 
 mod session;
 
 use session::{ResponseTimeout, RpcError, Session};
 
-type Sessions = HashMap<(PathBuf, String), Arc<tokio::sync::Mutex<Option<Session>>>>;
+type SessionSlot = Arc<tokio::sync::Mutex<Option<Session>>>;
+type Sessions = HashMap<(PathBuf, String), SessionSlot>;
+
+static WARMUP: LazyLock<bool> = LazyLock::new(|| env::var_os("YAZED_LSP_WARMUP").is_some_and(|value| value == "1"));
 
 #[derive(Clone, Default)]
 pub(super) struct Lsp {
@@ -47,28 +50,62 @@ struct Server {
 }
 
 impl Lsp {
-	pub(super) async fn definition(&self, source: ViewSource) -> Result<Vec<DefinitionTarget>> {
-		let path = source.url.as_local().context("Definitions require a local file")?.to_owned();
-		let (path, root, config) = tokio::task::spawn_blocking(move || {
+	pub(super) fn warm_on_open(view: &mut View, lsp: &mut Option<Self>) {
+		if !*WARMUP {
+			return;
+		}
+		let source = view.definition_source();
+		let lsp = lsp.get_or_insert_with(Self::default).clone();
+		tokio::spawn(async move {
+			if let Err(error) = lsp.prepare(source).await {
+				tracing::debug!(%error, "Language server warmup skipped");
+			}
+		});
+	}
+
+	async fn prepare(&self, source: ViewSource) -> Result<()> {
+		let (path, root, config) = Self::server_for(&source.url).await?;
+		let slot = self.slot(&root, &config);
+		let mut slot = slot.lock().await;
+		// A lookup may have opened the document with newer contents while we were discovering it.
+		if slot.as_ref().is_some_and(|session| session.matches(&config)) {
+			return Ok(());
+		}
+		let mut session = Self::start(&root, config).await?;
+		session.prepare_document(&path, &source).await?;
+		*slot = Some(session);
+		Ok(())
+	}
+
+	async fn server_for(url: &UrlBuf) -> Result<(PathBuf, PathBuf, Server)> {
+		let path = url.as_local().context("Definitions require a local file")?.to_owned();
+		tokio::task::spawn_blocking(move || {
 			let path = fs::canonicalize(&path).unwrap_or(path);
 			let (root, config) = Server::discover(&path)?;
-			Ok::<_, anyhow::Error>((path, root, config))
-		})
-		.await??;
+			Ok((path, root, config))
+		}).await?
+	}
 
-		let key = (root.clone(), config.language_id.clone());
-		let slot = self.sessions.lock().unwrap().entry(key).or_default().clone();
+	fn slot(&self, root: &Path, config: &Server) -> SessionSlot {
+		let key = (root.to_owned(), config.language_id.clone());
+		self.sessions.lock().unwrap().entry(key).or_default().clone()
+	}
+
+	async fn start(root: &Path, config: Server) -> Result<Session> {
+		timeout(Duration::from_secs(25), Session::start(root, config))
+			.await.context("Starting the language server timed out")?
+	}
+
+	pub(super) async fn definition(&self, source: ViewSource) -> Result<Vec<DefinitionTarget>> {
+		let (path, root, config) = Self::server_for(&source.url).await?;
+		let slot = self.slot(&root, &config);
 		let response = {
 			let mut slot = slot.lock().await;
 			if slot.as_ref().is_some_and(|s| !s.matches(&config)) {
 				*slot = None;
 			}
 			if slot.is_none() {
-				*slot = Some(
-					timeout(Duration::from_secs(25), Session::start(&root, config))
-						.await
-						.context("Starting the language server timed out")??,
-				);
+				*slot = Some(Self::start(&root, config).await?);
 			}
 			match slot.as_mut().unwrap().definition(&path, &source).await {
 				Ok(response) => response,
@@ -123,7 +160,7 @@ impl Server {
 				root: None,
 				initialization_options: Some(serde_json::json!({
 					"checkOnSave": false,
-					"cachePriming": { "enable": false },
+					"cachePriming": { "enable": *WARMUP },
 					"cargo": { "buildScripts": { "enable": false } },
 					"procMacro": { "enable": false },
 				})),
