@@ -1,4 +1,4 @@
-_yazi_bash_words() {
+_yazed_bash_words() {
 	local LC_ALL=C
 	local line=${COMP_LINE:0:COMP_POINT} word= quote= char
 	local started=0 i start=$((COMP_POINT - ${#1}))
@@ -50,12 +50,12 @@ _yazi_bash_words() {
 	words+=("$word")
 }
 
-_yazi() {
+_yazed() {
 	local -a words
 	local prefix quoting cand char
 
 	COMPREPLY=()
-	_yazi_bash_words "$2" || return 0
+	_yazed_bash_words "$2" || return 0
 	compopt +o nospace 2>/dev/null || :
 
 	while IFS= read -r -d '' cand; do
@@ -76,9 +76,9 @@ _yazi() {
 		esac
 		COMPREPLY+=("$cand")
 	done < <(
-		yazi --completion=bash -- "${words[@]}"
+		yazed --completion=bash -- "${words[@]}"
 	)
 }
 
-complete -o nospace -o bashdefault -o default -o nosort -F _yazi yazi 2>/dev/null ||
-	complete -o nospace -o bashdefault -o default -F _yazi yazi
+complete -o nospace -o bashdefault -o default -o nosort -F _yazed yazed 2>/dev/null ||
+	complete -o nospace -o bashdefault -o default -F _yazed yazed

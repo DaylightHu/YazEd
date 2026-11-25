@@ -55,10 +55,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
 
   postInstall = ''
-    installShellCompletion --cmd yazi \
-      --bash ./assets/completions/yazi.bash \
-      --fish ./assets/completions/yazi.fish \
-      --zsh  ./assets/completions/_yazi
+    installShellCompletion --cmd yazed \
+      --bash ./assets/completions/yazed.bash \
+      --fish ./assets/completions/yazed.fish \
+      --zsh  ./assets/completions/_yazed
 
     installShellCompletion --cmd ya \
       --bash ./assets/completions/ya.bash \
@@ -74,7 +74,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     installManPage ${finalAttrs.passthru.srcs.man_src}/yazi{.1,-config.5}
 
     mkdir -p $out/share/applications
-    install -m644 assets/yazi.desktop $out/share/applications/
+    install -m644 assets/yazed.desktop $out/share/applications/
   '';
 
   passthru.srcs = {
@@ -90,8 +90,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   meta = {
     description = "Blazing fast terminal file manager written in Rust, based on async I/O";
-    homepage = "https://github.com/DaylightHu/yazi-editor";
+    homepage = "https://github.com/DaylightHu/YazEd";
     license = lib.licenses.mit;
-    mainProgram = "yazi";
+    mainProgram = "yazed";
   };
 })

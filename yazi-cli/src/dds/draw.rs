@@ -20,7 +20,7 @@ impl Dds {
 			Ok(lines)
 		}
 
-		let mut lines = make(&kinds).await.context("No running Yazi instance found")?;
+		let mut lines = make(&kinds).await.context("No running YazEd instance found")?;
 		loop {
 			match lines.next_line().await? {
 				Some(s) => {

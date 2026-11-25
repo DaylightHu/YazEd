@@ -203,7 +203,9 @@ impl View {
 					.is_some_and(|register| view.put_register(register, action.bool("before")));
 				succ!(Self::redraw(view, changed));
 			}
-			"insert" if !view.saving && view.visual_mode().is_none() => view.insert = true,
+			"insert" if !view.saving && !view.insert && view.visual_mode().is_none() => {
+				view.enter_insert(action.bool("after"));
+			}
 			"undo" if !view.saving && view.visual_mode().is_none() => {
 				let changed = view.undo();
 				succ!(Self::redraw(view, changed));

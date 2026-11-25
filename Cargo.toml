@@ -8,8 +8,8 @@ edition      = "2024"
 version      = "26.9.1"
 license      = "MIT"
 authors      = [ "sxyazi <sxyazi@gmail.com>" ]
-homepage     = "https://github.com/DaylightHu/yazi-editor"
-repository   = "https://github.com/DaylightHu/yazi-editor"
+homepage     = "https://github.com/DaylightHu/YazEd"
+repository   = "https://github.com/DaylightHu/YazEd"
 rust-version = "1.99.0"
 
 [profile.dev]

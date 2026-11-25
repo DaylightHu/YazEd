@@ -8,7 +8,7 @@ macro_rules! setup {
 		{
 			let name = match env!("CARGO_PKG_NAME") {
 				"yazi-cli" => "Ya",
-				"yazi-fm" => "Yazi",
+				"yazi-fm" => "YazEd",
 				s => s,
 			};
 

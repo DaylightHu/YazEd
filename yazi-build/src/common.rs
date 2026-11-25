@@ -49,7 +49,7 @@ pub(super) fn copy_bins(target: &str, profile: &str, to: &Path) -> Result<()> {
 	from.push(profile);
 
 	let ext = if is_windows_target(target) { ".exe" } else { "" };
-	copy_file(&from.join(format!("yazi{ext}")), &to.join(format!("yazi{ext}")))?;
+	copy_file(&from.join(format!("yazed{ext}")), &to.join(format!("yazed{ext}")))?;
 	copy_file(&from.join(format!("ya{ext}")), &to.join(format!("ya{ext}")))?;
 	Ok(())
 }

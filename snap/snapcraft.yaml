@@ -15,7 +15,7 @@ platforms:
 
 apps:
   yazi:
-    command: yazi
+    command: yazed
     environment:
       PATH: $SNAP/bin:$SNAP/usr/bin:$PATH
   ya:
@@ -44,7 +44,7 @@ parts:
       - zoxide
     override-build: |
       cargo xtask install --bin-dir "$CRAFT_PART_INSTALL"
-      craftctl set version="v$("$CRAFT_PART_INSTALL/yazi" --version | sed -nE 's/^\s+Version:\s+//p' | sed -E 's/[ ()]+/-/g; s/-+$//')"
+      craftctl set version="v$("$CRAFT_PART_INSTALL/yazed" --version | sed -nE 's/^\s+Version:\s+//p' | sed -E 's/[ ()]+/-/g; s/-+$//')"
     build-attributes:
       - enable-patchelf
     organize:

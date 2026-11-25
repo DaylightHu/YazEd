@@ -54,7 +54,7 @@ impl Dest {
 
 		let ext = if is_windows_target(&self.target) { ".exe" } else { "" };
 		copy_file(&root.join(format!("target/release/ya{ext}")), &dest.join(format!("ya{ext}")))?;
-		copy_file(&root.join(format!("target/release/yazi{ext}")), &dest.join(format!("yazi{ext}")))?;
+		copy_file(&root.join(format!("target/release/yazed{ext}")), &dest.join(format!("yazed{ext}")))?;
 
 		Self::copy_files(&root.join("assets/completions"), &completions)?;
 

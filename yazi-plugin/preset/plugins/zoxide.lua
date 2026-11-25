@@ -33,7 +33,7 @@ function M:entry(job)
 	if empty then
 		return ya.notify {
 			title = "Zoxide",
-			content = "No directory history found, check Zoxide's doc to set it up and restart Yazi.",
+			content = "No directory history found, check Zoxide's doc to set it up and restart YazEd.",
 			timeout = 5,
 			level = "error",
 		}

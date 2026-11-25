@@ -8,7 +8,7 @@ use yazi_shared::strand::StrandLike;
 use yazi_vfs::Completer;
 
 #[derive(Parser)]
-#[command(name = "yazi")]
+#[command(name = "yazed")]
 pub(crate) struct Completion {
 	#[arg(long = "completion", value_name = "SHELL")]
 	shell: Shell,

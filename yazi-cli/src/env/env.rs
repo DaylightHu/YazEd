@@ -18,7 +18,7 @@ impl Env {
 		let emulator = Emulator::probe().await?;
 		let theme = build_flavor(emulator.light().unwrap_or_default())?;
 
-		writeln!(s, "Yazi\n{}", Self::yazi_version())?;
+		writeln!(s, "YazEd\n{}", Self::yazed_version())?;
 		writeln!(s, "    Backtrace: {:?}", env::var_os("RUST_BACKTRACE"))?;
 
 		writeln!(s, "\nYa\n{}", yazi_version::version_full())?;
@@ -125,13 +125,13 @@ impl Env {
 		Ok(s)
 	}
 
-	fn yazi_version() -> String {
-		match Command::new("yazi").arg("--version").output() {
+	fn yazed_version() -> String {
+		match Command::new("yazed").arg("--version").output() {
 			Ok(out) if out.status.success() => {
 				let s = if out.stdout.is_empty() { out.stderr } else { out.stdout };
 				let s = String::from_utf8_lossy(&s);
 				let s = s.trim();
-				s.strip_prefix("Yazi\n").unwrap_or(s).to_owned()
+				s.strip_prefix("YazEd\n").unwrap_or(s).to_owned()
 			}
 			Ok(out) => format!("{:?}, {:?}", out.status, String::from_utf8_lossy(&out.stderr)),
 			Err(e) => format!("{e}"),
