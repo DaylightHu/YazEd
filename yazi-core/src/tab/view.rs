@@ -9,6 +9,9 @@ use yazi_shared::{scope::Scope, url::{UrlBuf, UrlLike}};
 
 use super::{search::{Search, SearchHit}, syntax::Syntax};
 
+mod assist;
+pub use assist::*;
+
 #[derive(Clone, Debug)]
 pub struct View {
 	pub url:     UrlBuf,
@@ -16,6 +19,8 @@ pub struct View {
 	pub insert:  bool,
 	pub saving:  bool,
 	pub stamp:   Option<FileStamp>,
+	pub assist:  Option<Box<ViewAssist>>,
+	assist_revision: u64,
 
 	text:    Rope,
 	bom:     bool,
@@ -115,6 +120,8 @@ impl View {
 			insert: false,
 			saving: false,
 			stamp: None,
+			assist: None,
+			assist_revision: 0,
 			text,
 			bom,
 			crlf,
@@ -339,6 +346,7 @@ impl View {
 	}
 
 	fn replace(&mut self, range: Range<usize>, text: &str) {
+		self.assist_revision += 1;
 		if !self.joining {
 			self.undo.push(Change { cursor: self.cursor, version: self.version, edits: Vec::new() });
 			self.next += 1;
@@ -377,6 +385,7 @@ impl View {
 	pub fn undo(&mut self) -> bool {
 		self.end_change();
 		let Some(change) = self.undo.pop() else { return false };
+		self.assist_revision += 1;
 		for edit in change.edits.into_iter().rev() {
 			let range = edit.start..edit.start + edit.inserted;
 			self.invalidate_syntax(range.clone(), &edit.removed);

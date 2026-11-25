@@ -526,7 +526,14 @@ impl View {
 		let (x, _) = buf.set_stringn(area.x, status_y, mode, area.width as usize, mode_style);
 		let (x, _) = buf.set_stringn(x, status_y, marker, (area.right() - x) as usize, style);
 		if let Some(name) = view.url.name() {
-			buf.set_stringn(x, status_y, name.to_string_lossy(), (area.right() - x) as usize, style);
+			let (end, _) = buf.set_stringn(x, status_y, name.to_string_lossy(), (area.right() - x) as usize, style);
+			if view.focused && view.insert && let Some(assist) = &view.assist {
+				let detail = assist.items.get(assist.selected).map(|item| item.detail.as_str())
+					.filter(|text| !text.is_empty()).or(assist.status.as_deref());
+				if let Some(detail) = detail {
+					buf.set_stringn(end, status_y, format!(" | {detail}"), (area.right() - end) as usize, style);
+				}
+			}
 		}
 
 		let width = area.width as usize;
@@ -593,5 +600,6 @@ impl View {
 				buf.set_style(Rect::new(area.x + (col - left) as u16, y, 1, 1), visual_style);
 			}
 		}
+		crate::assist::Assist::render(view, area, buf);
 	}
 }

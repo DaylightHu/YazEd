@@ -2,6 +2,7 @@
 //! Run `target/yazed-perf BASELINE [CANDIDATE]` with release binaries.
 //! Use `target/yazed-perf --editor BUILD [BUILD]` for builds with the native editor.
 //! Use `--editor-c` to exercise syntax highlighting with a C source file.
+//! Use `--completion BUILD` with clangd on PATH for real C completion latency.
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 compile_error!("This benchmark currently targets Linux x86_64");
@@ -60,8 +61,8 @@ unsafe extern "C" {
 
 fn main() -> Result<()> {
 	let mut args = env::args_os().skip(1).peekable();
-	let editor = args.next_if(|arg| arg == "--editor" || arg == "--editor-c");
-	let usage = "Usage: yazed-perf [--editor | --editor-c] BASELINE [CANDIDATE]";
+	let editor = args.next_if(|arg| arg == "--editor" || arg == "--editor-c" || arg == "--completion");
+	let usage = "Usage: yazed-perf [--editor | --editor-c | --completion] BASELINE [CANDIDATE]";
 	let baseline = fs::canonicalize(args.next().ok_or(usage)?)?;
 	let candidate = args.next().map(fs::canonicalize).transpose()?;
 	if args.next().is_some() {
@@ -84,6 +85,7 @@ fn main() -> Result<()> {
 	}
 
 	if let Some(editor) = editor {
+		if editor == "--completion" { return completion_bench(&programs); }
 		return editor_bench(&programs, editor == "--editor-c");
 	}
 
@@ -142,6 +144,71 @@ fn main() -> Result<()> {
 				values[0],
 				values[RUNS - 1]
 			);
+		}
+	}
+	Ok(())
+}
+
+fn completion_bench(programs: &[Program]) -> Result<()> {
+	const METRICS: [&str; 5] = ["cold_type_ms", "cold_menu_ms", "warm_menu_ms", "signature_ms", "accept_ms"];
+	let temp = TempDir::new()?;
+	println!("Real clangd, termios.h constants and tcsetattr signature, {RUNS} fresh editor/server sessions");
+	println!("run  build       cold_type_ms  cold_menu_ms  warm_menu_ms  signature_ms  accept_ms");
+	for program in programs {
+		let mut samples = Vec::new();
+		for run in 0..RUNS {
+			let state = temp.0.join(format!("{}-{run}", program.label));
+			let fixture = state.join("fixture");
+			fs::create_dir_all(&fixture)?;
+			let path = fixture.join("sample.c");
+			fs::write(&path, "#include <termios.h>\n#include <unistd.h>\nvoid bench(void) {\n    \n}\n")?;
+			let config = state.join("config");
+			fs::create_dir_all(&config)?;
+			fs::write(config.join("keymap.toml"), "[view]\nprepend_keymap = [{on=\"<C-s>\",run=\"save\"},{on=\"<F8>\",run=\"close\"}]\n")?;
+			let mut terminal = Terminal::start(&program.path, &fixture, &state)?;
+			terminal.wait_frame("C fixture", &[b"sample.c"])?;
+			terminal.step(b"\r", "open C file", &[b"NORMAL"])?;
+			terminal.step(b"jjj$i", "insert in function", &[b"INSERT"])?;
+			terminal.clear();
+			let started = Instant::now();
+			terminal.master.write_all(b"tcsetattr(STDIN_FILENO, TCSA")?;
+			let typing = terminal.wait_frame("cold input", &[b"TCSA"])? - started;
+			let cold = terminal.wait_frame("header constant completion", &[b"TCSANOW"])? - started;
+			// A more specific prefix yields a single candidate that can be accepted deterministically.
+			let warm = terminal.step(b"N", "warm constant completion", &[b"TCSANOW"])?;
+			let accepted = terminal.step(b"\t", "accept constant", &[b"OW", b"TCSANOW"])?;
+			terminal.normal()?;
+			terminal.master.write_all(b"\x13")?;
+			let deadline = Instant::now() + TIMEOUT;
+			while !fs::read_to_string(&path)?.contains("tcsetattr(STDIN_FILENO, TCSANOW") {
+				if Instant::now() >= deadline { return Err("Completion inserted incorrect text".into()); }
+				thread::sleep(Duration::from_millis(1));
+			}
+			terminal.drain(Duration::from_millis(100))?;
+			terminal.step(b"$a", "resume call", &[b"INSERT"])?;
+			let signature = terminal.step(b", ", "third parameter signature", &[b"termios_p"])?;
+			terminal.normal()?;
+			terminal.master.write_all(b"\x13")?;
+			let deadline = Instant::now() + TIMEOUT;
+			while !fs::read_to_string(&path)?.contains("TCSANOW, ") {
+				if Instant::now() >= deadline { return Err("Final completion fixture was not saved".into()); }
+				thread::sleep(Duration::from_millis(1));
+			}
+			terminal.drain(Duration::from_millis(100))?;
+			terminal.master.write_all(b"\x1b[19~")?;
+			terminal.drain(Duration::from_millis(100))?;
+			terminal.quit()?;
+			let result = [typing, cold, warm, signature, accepted].map(|d| d.as_secs_f64() * 1000.0);
+			print!("{:>3}  {:<10}", run + 1, program.label);
+			for value in result { print!(" {value:>12.2}"); }
+			println!();
+			samples.push(result);
+		}
+		println!("{} (median and observed range)", program.label);
+		for (i, metric) in METRICS.into_iter().enumerate() {
+			let mut values: Vec<_> = samples.iter().map(|s| s[i]).collect();
+			values.sort_by(f64::total_cmp);
+			println!("  {metric:<14} {:>8.2} [{:.2} .. {:.2}]", values[RUNS / 2], values[0], values[RUNS - 1]);
 		}
 	}
 	Ok(())
@@ -346,6 +413,14 @@ struct Terminal {
 }
 
 impl Terminal {
+	fn normal(&mut self) -> Result<()> {
+		// Separate Escape bytes so the terminal parser does not interpret Alt+Escape.
+		self.master.write_all(b"\x1b")?;
+		self.drain(Duration::from_millis(50))?;
+		self.master.write_all(b"\x1b")?;
+		self.drain(Duration::from_millis(50))
+	}
+
 	fn start(binary: &Path, fixture: &Path, state: &Path) -> Result<Self> {
 		let mut command = Command::new(binary);
 		command.arg(fixture).env("TERM", "xterm-256color").env_remove("TERM_PROGRAM");

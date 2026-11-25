@@ -34,7 +34,7 @@ impl<'a> Router<'a> {
 				return Ok(true);
 			}
 			if let Some(view) = &mut core.active_mut().view
-				&& View::insert_key(view, &key)
+				&& (crate::assist::Assist::key(view, &key) || View::insert_key(view, &key))
 			{
 				return Ok(true);
 			}

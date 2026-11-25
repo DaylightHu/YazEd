@@ -53,9 +53,13 @@ mlua               = { workspace = true }
 ratatui-core       = { workspace = true }
 ratatui-widgets    = { workspace = true }
 scopeguard         = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
 tempfile           = "3.27"
 tokio              = { workspace = true }
 tokio-stream       = { workspace = true }
+toml               = { workspace = true }
+url                = "2.5"
 tracing            = { workspace = true }
 tracing-appender   = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = [ "env-filter" ] }
