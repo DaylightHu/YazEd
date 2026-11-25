@@ -10,10 +10,11 @@ use yazi_term::event::Event as TermEvent;
 use yazi_tui::Raterm;
 
 use super::{FrameCursor, SyncGuard, cursor_trail::CursorTrail};
-use crate::Dispatcher;
+use crate::{Dispatcher, lsp::Lsp};
 
 pub(crate) struct App {
 	pub(crate) core: Core,
+	pub(crate) lsp: Option<Lsp>,
 
 	pub(super) need_render:     u8,
 	pub(super) clear_on_render: bool,
@@ -26,6 +27,7 @@ impl App {
 	fn make(term: Raterm) -> Self {
 		Self {
 			core: Core::make(term),
+			lsp: None,
 
 			need_render:     0,
 			clear_on_render: false,

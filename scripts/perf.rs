@@ -2,11 +2,12 @@
 //! Run `target/yazed-perf BASELINE [CANDIDATE]` with release binaries.
 //! Use `target/yazed-perf --editor BUILD [BUILD]` for builds with the native editor.
 //! Use `--editor-c` to exercise syntax highlighting with a C source file.
+//! Use `--definition BUILD [BUILD]` to time definition lookup with a controlled LSP server.
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 compile_error!("This benchmark currently targets Linux x86_64");
 
-use std::{env, error::Error, ffi::{c_char, c_int, c_short, c_ulong, c_void}, fs::{self, DirBuilder, File}, io::{self, Read, Write}, os::{fd::{AsRawFd, FromRawFd}, unix::{fs::DirBuilderExt, process::CommandExt}}, path::{Path, PathBuf}, process::{self, Child, Command, Stdio}, ptr, thread, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
+use std::{env, error::Error, ffi::{c_char, c_int, c_short, c_ulong, c_void}, fs::{self, DirBuilder, File}, io::{self, BufRead, BufReader, Read, Write}, os::{fd::{AsRawFd, FromRawFd}, unix::{fs::DirBuilderExt, process::CommandExt}}, path::{Path, PathBuf}, process::{self, Child, Command, Stdio}, ptr, thread, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -60,8 +61,11 @@ unsafe extern "C" {
 
 fn main() -> Result<()> {
 	let mut args = env::args_os().skip(1).peekable();
-	let editor = args.next_if(|arg| arg == "--editor" || arg == "--editor-c");
-	let usage = "Usage: yazed-perf [--editor | --editor-c] BASELINE [CANDIDATE]";
+	if args.next_if(|arg| arg == "--definition-server").is_some() {
+		return definition_server(Path::new(&args.next().ok_or("Missing definition fixture")?));
+	}
+	let editor = args.next_if(|arg| ["--editor", "--editor-c", "--definition"].iter().any(|mode| arg == mode));
+	let usage = "Usage: yazed-perf [--editor | --editor-c | --definition] BASELINE [CANDIDATE]";
 	let baseline = fs::canonicalize(args.next().ok_or(usage)?)?;
 	let candidate = args.next().map(fs::canonicalize).transpose()?;
 	if args.next().is_some() {
@@ -84,6 +88,9 @@ fn main() -> Result<()> {
 	}
 
 	if let Some(editor) = editor {
+		if editor == "--definition" {
+			return definition_bench(&programs);
+		}
 		return editor_bench(&programs, editor == "--editor-c");
 	}
 
@@ -167,38 +174,169 @@ fn editor_bench(programs: &[Program], c_source: bool) -> Result<()> {
 		println!("{name}, {WIDTH}x{HEIGHT} cells, {} bytes, 48 typed keys", text.len());
 		println!("run  build         open_ms   type_ms   undo_ms   save_ms");
 
-		let mut samples = vec![Vec::with_capacity(RUNS); programs.len()];
-		for run in 0..=RUNS {
-			for i in 0..programs.len() {
-				let index = (run + i) % programs.len();
-				let program = &programs[index];
-				let state = temp.0.join(format!("{target}-{}-{run}", program.label));
-				let result = trial_editor(program, &state, name, &text)?;
-				if run > 0 {
-					print!("{run:>3}  {:<10}", program.label);
-					for value in result {
-						print!(" {value:>9.2}");
-					}
-					println!();
-					samples[index].push(result);
+		editor_trials(programs, METRICS, |program, run| {
+			let state = temp.0.join(format!("{target}-{}-{run}", program.label));
+			trial_editor(program, &state, name, &text)
+		})?;
+	}
+	Ok(())
+}
+
+fn definition_bench(programs: &[Program]) -> Result<()> {
+	const METRICS: [&str; 4] = ["first_lookup_ms", "warm_lookup_ms", "type_idle_ms", "type_pending_ms"];
+	let temp = TempDir::new()?;
+	println!("Definition lookup using a controlled LSP server over stdio");
+	println!("run  build         first_ms   warm_ms   idle_ms   pending_ms");
+	editor_trials(programs, METRICS, |program, run| {
+		let state = temp.0.join(format!("{}-{run}", program.label));
+		trial_definition(program, &state)
+	})
+}
+
+fn editor_trials(
+	programs: &[Program],
+	metrics: [&str; 4],
+	trial: impl Fn(&Program, usize) -> Result<[f64; 4]>,
+) -> Result<()> {
+	let mut samples = vec![Vec::with_capacity(RUNS); programs.len()];
+	for run in 0..=RUNS {
+		for i in 0..programs.len() {
+			let index = (run + i) % programs.len();
+			let program = &programs[index];
+			let result = trial(program, run)?;
+			if run > 0 {
+				print!("{run:>3}  {:<10}", program.label);
+				for value in result {
+					print!(" {value:>9.2}");
 				}
-			}
-		}
-		for (program, samples) in programs.iter().zip(samples) {
-			println!("{} (median and observed range)", program.label);
-			for (index, metric) in METRICS.iter().enumerate() {
-				let mut values: Vec<_> = samples.iter().map(|s| s[index]).collect();
-				values.sort_unstable_by(f64::total_cmp);
-				println!(
-					"  {metric:<12} {:>8.2}  [{:.2} .. {:.2}]",
-					values[RUNS / 2],
-					values[0],
-					values[RUNS - 1]
-				);
+				println!();
+				samples[index].push(result);
 			}
 		}
 	}
+	for (program, samples) in programs.iter().zip(samples) {
+		println!("{} (median and observed range)", program.label);
+		for (index, metric) in metrics.iter().enumerate() {
+			let mut values: Vec<_> = samples.iter().map(|s| s[index]).collect();
+			values.sort_unstable_by(f64::total_cmp);
+			println!(
+				"  {metric:<12} {:>8.2}  [{:.2} .. {:.2}]",
+				values[RUNS / 2], values[0], values[RUNS - 1],
+			);
+		}
+	}
 	Ok(())
+}
+
+fn trial_definition(program: &Program, state: &Path) -> Result<[f64; 4]> {
+	let fixture = state.join("fixture");
+	fs::create_dir_all(&fixture)?;
+	fs::write(fixture.join("sample.lookup"), "cold_call()\nwarm_call()\npending_call()\n")?;
+	let target = state.join("definitions.txt");
+	fs::write(&target, "COLD_DEFINITION\nWARM_DEFINITION\nPENDING_DEFINITION\n")?;
+	let config = state.join("config");
+	fs::create_dir_all(&config)?;
+	let executable = env::current_exe()?;
+	fs::write(config.join("lsp.toml"), format!(
+		"[[server]]\nextensions = [\"lookup\"]\nlanguage_id = \"plaintext\"\ncommand = [{}, \"--definition-server\", {}]\n",
+		toml_string(&executable)?, toml_string(&target)?,
+	))?;
+
+	let mut terminal = Terminal::start(&program.path, &fixture, state)?;
+	terminal.wait_frame("definition fixture", &[b"sample.lookup"])?;
+	terminal.step(b"\r", "open definition fixture", &[b"NORMAL"])?;
+	if target.with_extension("started").exists() {
+		return Err("The language server started before the first lookup".into());
+	}
+	let first = terminal.step(b"gd", "first definition", &[b"definitions.txt:1"])?;
+	terminal.step(b"\x1b", "close first definition", &[b"NORMAL"])?;
+	// Move to a different call and require its own location from the same server.
+	let warm = terminal.step(b"jgd", "warm definition", &[b"definitions.txt:2"])?;
+	terminal.step(b"\x1b", "close warm definition", &[b"NORMAL"])?;
+
+	let mut keys = [b'x'; 48];
+	keys[47] = b'Z';
+	terminal.step(b"i", "enter insert mode without a query", &[b"INSERT"])?;
+	let idle = terminal.step(&keys, "type without a query", &[b"Z"])?;
+	terminal.step(b"\x1b", "leave insert mode", &[b"NORMAL"])?;
+	terminal.step(b"u", "undo the tracking text", &[b"warm_call"])?;
+	terminal.master.write_all(b"0jgd")?;
+	let pending_file = target.with_extension("pending");
+	let deadline = Instant::now() + TIMEOUT;
+	while !pending_file.exists() {
+		if Instant::now() >= deadline {
+			return Err("The language server did not receive the pending lookup".into());
+		}
+		let _ = terminal.read_until(Instant::now() + Duration::from_millis(5))?;
+	}
+	terminal.step(b"i", "enter insert mode during a query", &[b"INSERT"])?;
+	let pending = terminal.step(&keys, "type during a query", &[b"Z"])?;
+	terminal.step(b"\x1b", "leave insert mode", &[b"NORMAL"])?;
+	terminal.step(b":q!\r", "close edited fixture", &[b"sample.lookup"])?;
+	terminal.quit()?;
+	Ok([first, warm, idle, pending].map(|time| time.as_secs_f64() * 1_000.0))
+}
+
+fn toml_string(path: &Path) -> Result<String> {
+	let path = path.to_str().ok_or("The benchmark path must be UTF-8")?;
+	Ok(format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")))
+}
+
+// Match only the requests emitted by the benchmark client. The editor handles full JSON-RPC.
+fn definition_server(target: &Path) -> Result<()> {
+	fs::write(target.with_extension("started"), b"")?;
+	let mut input = BufReader::new(io::stdin().lock());
+	let mut output = io::stdout().lock();
+	let mut uri = String::from("file://");
+	for &byte in target.as_os_str().as_encoded_bytes() {
+		if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+			uri.push(byte as char);
+		} else {
+			use std::fmt::Write;
+			write!(uri, "%{byte:02X}")?;
+		}
+	}
+	let mut lookups = 0;
+	let mut header = String::new();
+	loop {
+		let mut length = None;
+		loop {
+			header.clear();
+			if input.read_line(&mut header)? == 0 {
+				return Ok(());
+			}
+			if header == "\r\n" {
+				break;
+			}
+			if let Some(value) = header.strip_prefix("Content-Length:") {
+				length = Some(value.trim().parse::<usize>()?);
+			}
+		}
+		let mut bytes = vec![0; length.ok_or("Missing Content-Length")?];
+		input.read_exact(&mut bytes)?;
+		let text = std::str::from_utf8(&bytes)?;
+		let Some((_, id)) = text.split_once("\"id\":") else { continue };
+		let id = id.trim_start().split(|c: char| !c.is_ascii_digit()).next().unwrap_or_default();
+		if id.is_empty() {
+			continue;
+		}
+		let result = if text.contains("\"method\":\"initialize\"") {
+			String::from(r#"{"capabilities":{"definitionProvider":true,"textDocumentSync":{"openClose":true,"change":2}}}"#)
+		} else if text.contains("\"method\":\"textDocument/definition\"") {
+			let line = lookups;
+			lookups += 1;
+			if line == 2 {
+				fs::write(target.with_extension("pending"), b"")?;
+				thread::sleep(Duration::from_millis(650));
+			}
+			format!(r#"{{"uri":"{uri}","range":{{"start":{{"line":{line},"character":0}},"end":{{"line":{line},"character":1}}}}}}"#)
+		} else {
+			String::from("null")
+		};
+		let reply = format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{result}}}"#);
+		write!(output, "Content-Length: {}\r\n\r\n{reply}", reply.len())?;
+		output.flush()?;
+	}
 }
 
 fn trial_editor(program: &Program, state: &Path, name: &str, text: &str) -> Result<[f64; 4]> {

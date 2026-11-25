@@ -5,13 +5,17 @@ use ratatui_core::{buffer::Buffer, layout::Rect, style::{Modifier, Style}};
 use yazi_actor::act;
 use yazi_boot::BOOT;
 use yazi_config::{LAYOUT, THEME, popup::ConfirmCfg};
-use yazi_core::{Ctx, input::{ViewPrompt, ViewPromptKind}, mgr::OpenOpt, tab::{FileStamp, View as DocumentView, ViewSelectionOp, ViewSelectionSpan, cell_width, grapheme_text, graphemes}};
+use yazi_core::{Ctx, input::{ViewPrompt, ViewPromptKind}, mgr::OpenOpt, tab::{FileStamp, View as DocumentView, ViewReturn, ViewSelectionOp, ViewSelectionSpan, cell_width, grapheme_text, graphemes}};
 use yazi_macro::{emit, impl_data_any, relay, render, succ};
 use yazi_proxy::ConfirmProxy;
 use yazi_scheduler::NotifyProxy;
 use yazi_shared::{data::Data, event::ActionCow, scope::Scope, url::{UrlBuf, UrlLike}};
 use yazi_term::event::{KeyCode, KeyEvent, KeyEventKind};
 use yazi_widgets::input::InputOpt;
+
+use crate::lsp::Lsp;
+
+mod definition;
 
 #[derive(Clone, Debug)]
 struct SaveResult {
@@ -50,7 +54,7 @@ impl View {
 			succ!(render!());
 		}
 
-		if cx.tab().view.as_ref().is_some_and(DocumentView::protect) {
+		if cx.tab().protect_views() {
 			succ!();
 		}
 
@@ -78,7 +82,7 @@ impl View {
 		succ!();
 	}
 
-	fn load(url: UrlBuf, scope: &Scope) -> Option<DocumentView> {
+	pub(super) fn open_text_file(path: &Path) -> Result<File> {
 		let mut options = OpenOptions::new();
 		options.read(true);
 		#[cfg(unix)]
@@ -86,20 +90,20 @@ impl View {
 			use std::os::unix::fs::OpenOptionsExt;
 			options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
 		}
+		let file = options.open(path)?;
+		ensure!(file.metadata()?.is_file(), "The definition is not a regular file");
+		Ok(file)
+	}
 
+	fn load(url: UrlBuf, scope: &Scope) -> Option<DocumentView> {
 		if scope.is_cancelled() {
 			return None;
 		}
-		let file = options.open(url.as_local()?).ok()?;
-		let meta = file.metadata().ok()?;
-		if !meta.is_file() {
-			return None;
-		}
-
+		let file = Self::open_text_file(url.as_local()?).ok()?;
+		let before = file.metadata().ok().and_then(|meta| FileStamp::new(&meta).ok());
 		let mut document =
 			DocumentView::read(url, BufReader::with_capacity(64 * 1024, &file), scope).ok()?;
-		let before = FileStamp::new(&meta).ok();
-		let after = FileStamp::new(&file.metadata().ok()?).ok();
+		let after = file.metadata().ok().and_then(|meta| FileStamp::new(&meta).ok());
 		document.stamp = before.filter(|_| before == after);
 		Some(document)
 	}
@@ -107,12 +111,13 @@ impl View {
 	pub(super) fn opened(cx: &mut Ctx, mut action: ActionCow) -> Result<Data> {
 		cx.tab_mut().view_load = None;
 		if let Some(view) = action.take_any("view") {
-			if cx.tab().view.as_ref().is_some_and(DocumentView::protect) {
+			if cx.tab().protect_views() {
 				succ!();
 			}
 			if cx.tab == cx.mgr.tabs.cursor && cx.tab().view.is_none() {
 				cx.preview_mut().reset();
 			}
+			cx.tab_mut().view_returns.clear();
 			cx.tab_mut().view = Some(view);
 			succ!(render!());
 		}
@@ -129,8 +134,11 @@ impl View {
 		)
 	}
 
-	pub(super) fn action(cx: &mut Ctx, mut action: ActionCow) -> Result<Data> {
+	pub(super) fn action(cx: &mut Ctx, mut action: ActionCow, lsp: &mut Option<Lsp>) -> Result<Data> {
 		match action.name.as_ref() {
+			"definition" => return Self::definition(cx, lsp),
+			"definition_ready" => return Self::definition_ready(cx, action),
+			"definition_opened" => return Self::definition_opened(cx, action),
 			"command" => return Self::show_prompt(cx, ViewPromptKind::Command),
 			"search" => {
 				return Self::show_prompt(cx, ViewPromptKind::Search { backward: action.bool("backward") });
@@ -150,12 +158,17 @@ impl View {
 
 		let Some(view) = &mut cx.core.mgr.tabs[cx.tab].view else { succ!() };
 		if action.name == "focus" {
+			view.definition_request = None;
 			view.end_change();
 			view.focused = !view.focused;
 			succ!(render!());
 		}
 
 		if matches!(action.name.as_ref(), "escape" | "close") {
+			let pending = view.definition_request.take().is_some();
+			if view.definition.take().is_some() {
+				succ!(render!());
+			}
 			if view.cancel_visual() {
 				succ!(render!());
 			}
@@ -164,7 +177,12 @@ impl View {
 				view.insert = false;
 				succ!(render!());
 			}
-			if action.name == "escape" || view.protect() {
+			if action.name == "escape" {
+				succ!(render!(pending));
+			}
+			if !matches!(cx.tab().view_returns.last(), Some(ViewReturn::Position(_)))
+				&& cx.tab().view.as_ref().is_some_and(DocumentView::protect)
+			{
 				succ!();
 			}
 			return Self::close(cx);
@@ -269,7 +287,16 @@ impl View {
 		if let Some(scope) = tab.view_load.take() {
 			scope.cancel();
 		}
-		succ!(render!(tab.view.take().is_some()));
+		match tab.view_returns.pop() {
+			Some(ViewReturn::Document(view)) => tab.view = Some(*view),
+			Some(ViewReturn::Position(position)) => {
+				if let Some(view) = &mut tab.view {
+					view.restore_position(position);
+				}
+			}
+			None => succ!(render!(tab.view.take().is_some())),
+		}
+		succ!(render!());
 	}
 
 	fn show_prompt(cx: &mut Ctx, kind: ViewPromptKind) -> Result<Data> {
@@ -297,6 +324,7 @@ impl View {
 		if cx.tab != cx.mgr.tabs.cursor || cx.tab().id != prompt.tab {
 			succ!();
 		}
+		let return_to_position = matches!(cx.tab().view_returns.last(), Some(ViewReturn::Position(_)));
 		let Some(view) = cx
 			.tab_mut()
 			.view
@@ -319,7 +347,7 @@ impl View {
 			"w" => Self::save(cx, false),
 			"wq" => Self::save(cx, true),
 			"q" => {
-				if view.protect() {
+				if !return_to_position && view.protect() {
 					succ!();
 				}
 				Self::close(cx)
@@ -509,6 +537,11 @@ impl View {
 			return;
 		}
 
+		if let Some(definition) = &view.definition {
+			Self::render_definition(definition, area, buf);
+			return;
+		}
+
 		let style = Style::default();
 		let (mode, mode_style) = if view.saving {
 			(" SAVING ", THEME.status.progress_label.get().0)
@@ -526,7 +559,10 @@ impl View {
 		let (x, _) = buf.set_stringn(area.x, status_y, mode, area.width as usize, mode_style);
 		let (x, _) = buf.set_stringn(x, status_y, marker, (area.right() - x) as usize, style);
 		if let Some(name) = view.url.name() {
-			buf.set_stringn(x, status_y, name.to_string_lossy(), (area.right() - x) as usize, style);
+			let (name_end, _) = buf.set_stringn(x, status_y, name.to_string_lossy(), (area.right() - x) as usize, style);
+			if view.definition_request.is_some() {
+				buf.set_stringn(name_end, status_y, " | Finding definition…", (area.right() - name_end) as usize, style);
+			}
 		}
 
 		let width = area.width as usize;
