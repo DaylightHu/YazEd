@@ -19,7 +19,7 @@ impl Actor for Quit {
 	const NAME: &str = "quit";
 
 	fn act(cx: &mut Ctx, Self::Form { opt, .. }: Self::Form) -> Result<Data> {
-		if cx.tabs().iter().filter_map(|tab| tab.view.as_ref()).any(|view| view.protect()) {
+		if cx.tabs().iter().any(|tab| tab.protect_views()) {
 			succ!();
 		}
 

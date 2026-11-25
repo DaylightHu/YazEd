@@ -5,17 +5,21 @@ use ropey::{Rope, RopeSlice};
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 use yazi_macro::impl_data_any;
 use yazi_scheduler::NotifyProxy;
-use yazi_shared::{scope::Scope, url::{UrlBuf, UrlLike}};
+use yazi_shared::{id::Id, scope::Scope, url::{UrlBuf, UrlLike}};
 
-use super::{search::{Search, SearchHit}, syntax::Syntax};
+use super::{DefinitionTarget, ViewDefinition, ViewPosition, ViewSource, search::{Search, SearchHit}, syntax::Syntax};
 
 #[derive(Clone, Debug)]
 pub struct View {
-	pub url:     UrlBuf,
-	pub focused: bool,
-	pub insert:  bool,
-	pub saving:  bool,
-	pub stamp:   Option<FileStamp>,
+	pub url:                UrlBuf,
+	pub focused:            bool,
+	pub insert:             bool,
+	pub saving:             bool,
+	pub stamp:              Option<FileStamp>,
+	pub definition:         Option<Box<ViewDefinition>>,
+	pub definition_request: Option<Id>,
+
+	identity: Option<Id>,
 
 	text:    Rope,
 	bom:     bool,
@@ -115,6 +119,9 @@ impl View {
 			insert: false,
 			saving: false,
 			stamp: None,
+			definition: None,
+			definition_request: None,
+			identity: None,
 			text,
 			bom,
 			crlf,
@@ -132,6 +139,45 @@ impl View {
 			saved: 0,
 			next: 0,
 		})
+	}
+
+	pub fn definition_source(&mut self) -> ViewSource {
+		ViewSource {
+			url: self.url.clone(),
+			identity: *self.identity.get_or_insert_with(Id::unique),
+			revision: self.version,
+			cursor: self.cursor,
+			text: self.text.clone(),
+		}
+	}
+
+	pub fn at_definition_origin(&self, identity: Id, revision: usize, cursor: usize) -> bool {
+		self.identity == Some(identity) && self.version == revision && self.cursor == cursor
+	}
+
+	pub fn definition_position(&mut self, target: &DefinitionTarget) -> ViewPosition {
+		let before = ViewPosition { cursor: self.cursor, goal: self.goal, top: self.top, left: self.left };
+		let row = target.line.min(self.line_count() - 1);
+		let mut remaining = target.column;
+		let mut offset = 0;
+		for grapheme in graphemes(self.line(row)) {
+			let units: usize = grapheme.chars().map(|c| target.encoding.units(c)).sum();
+			if remaining < units {
+				break;
+			}
+			remaining -= units;
+			offset += grapheme.len_chars();
+		}
+		self.end_change();
+		self.set_cursor(self.text.line_to_char(row) + offset);
+		before
+	}
+
+	pub fn restore_position(&mut self, position: ViewPosition) {
+		let offset = self.text.char_to_byte(position.cursor.min(self.text.len_chars()));
+		let (start, _) = grapheme_bounds(self.text.slice(..), offset);
+		self.set_cursor(self.text.byte_to_char(start));
+		(self.goal, self.top, self.left) = (position.goal, position.top, position.left);
 	}
 
 	pub fn dirty(&self) -> bool { self.version != self.saved }
@@ -558,7 +604,7 @@ impl View {
 	}
 
 	pub fn screen_cursor(&self, area: Rect) -> Option<Position> {
-		if area.width == 0 || area.height < 2 {
+		if self.definition.is_some() || area.width == 0 || area.height < 2 {
 			return None;
 		}
 		let (top, left) = self.viewport(area.width as usize, area.height as usize - 1);

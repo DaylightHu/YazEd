@@ -33,6 +33,10 @@ impl<'a> Router<'a> {
 			if key.kind == KeyEventKind::Release {
 				return Ok(true);
 			}
+			if core.active().view.as_ref().is_some_and(|view| view.definition.is_some()) {
+				View::definition_key(&mut Ctx::active(core), &key);
+				return Ok(true);
+			}
 			if let Some(view) = &mut core.active_mut().view
 				&& View::insert_key(view, &key)
 			{
