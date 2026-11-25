@@ -48,7 +48,7 @@ impl Dds {
 	pub(super) fn ensure_version(version: Option<&str>) -> Result<()> {
 		if version != Some(yazi_version::version()) {
 			bail!(
-				"Incompatible version (Ya {}, Yazi {}). Restart all `ya` and `yazi` processes if you upgraded either.",
+				"Incompatible version (Ya {}, YazEd {}). Restart all `ya` and `yazed` processes if you upgraded either.",
 				yazi_version::version(),
 				version.unwrap_or("Unknown")
 			);

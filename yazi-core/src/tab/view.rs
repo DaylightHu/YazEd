@@ -165,6 +165,17 @@ impl View {
 
 	pub fn newline(&self) -> &'static str { if self.crlf { "\r\n" } else { "\n" } }
 
+	pub fn enter_insert(&mut self, after: bool) {
+		if after {
+			let line = self.cursor_line();
+			let end = self.text.line_to_char(line) + self.line(line).len_chars();
+			if self.cursor < end {
+				self.horizontal(false);
+			}
+		}
+		self.insert = true;
+	}
+
 	pub fn paste(&mut self, text: &str) -> bool {
 		let mut clean = String::with_capacity(text.len());
 		let mut chars = text.chars().peekable();

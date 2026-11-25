@@ -6,7 +6,7 @@ use yazi_shared::{id::Id, strand::StrandBuf};
 use yazi_shim::CompactString;
 
 #[derive(Debug, Default, Parser)]
-#[command(name = "yazi")]
+#[command(name = "yazed")]
 #[command(after_help = concat!("Project: ", env!("CARGO_PKG_REPOSITORY")))]
 pub struct Args {
 	/// Set the current working entry

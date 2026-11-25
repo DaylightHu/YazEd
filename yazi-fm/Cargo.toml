@@ -1,6 +1,6 @@
 [package]
 name                   = "yazi-fm"
-description            = "Yazi file manager"
+description            = "YazEd file manager and text editor"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true
@@ -68,7 +68,7 @@ signal-hook-tokio = { version = "0.4.0", features = [ "futures-v0_3" ] }
 tikv-jemallocator = "0.7.0"
 
 [[bin]]
-name = "yazi"
+name = "yazed"
 path = "src/main.rs"
 
 [package.metadata.binstall]

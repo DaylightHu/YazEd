@@ -1,6 +1,6 @@
-#compdef yazi
+#compdef yazed
 
-_yazi() {
+_yazed() {
 	local -a args=("${(@Q)words}") dirs cands
 	local cand prefix="${compstate[quote]}${PREFIX}${compstate[quote]}"
 
@@ -8,7 +8,7 @@ _yazi() {
 	PREFIX=
 
 	for cand in "${(@f)$(
-		yazi --completion=zsh --index "$((CURRENT - 1))" -- "${args[@]}" 2>/dev/null
+		yazed --completion=zsh --index "$((CURRENT - 1))" -- "${args[@]}" 2>/dev/null
 	)}"; do
 		case $cand in
 			'') ;;
@@ -30,8 +30,8 @@ _yazi() {
 	return 0
 }
 
-if [[ $funcstack[1] == _yazi ]]; then
-	_yazi "$@"
+if [[ $funcstack[1] == _yazed ]]; then
+	_yazed "$@"
 else
-	compdef _yazi yazi
+	compdef _yazed yazed
 fi

@@ -21,8 +21,8 @@ section                   = "utility"
 priority                  = "optional"
 assets                    = [
 	[ "target/release/ya", "usr/bin/", "755" ],
-	[ "target/release/yazi", "usr/bin/", "755" ],
+	[ "target/release/yazed", "usr/bin/", "755" ],
 	[ "../README.md",  "usr/share/doc/yazi/README", "644" ],
 	[ "../assets/completions/ya.bash", "usr/share/bash-completion/completions/ya", "644" ],
-	[ "../assets/completions/yazi.bash", "usr/share/bash-completion/completions/yazi", "644" ],
+	[ "../assets/completions/yazed.bash", "usr/share/bash-completion/completions/yazed", "644" ],
 ]

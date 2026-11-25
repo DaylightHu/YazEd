@@ -1,6 +1,6 @@
-//! Build on Debian with `rustc --edition=2024 -O scripts/perf.rs -o target/yazi-perf`.
-//! Run `target/yazi-perf BASELINE [CANDIDATE]` with release binaries.
-//! Use `target/yazi-perf --editor BUILD [BUILD]` for builds with the native editor.
+//! Build on Debian with `rustc --edition=2024 -O scripts/perf.rs -o target/yazed-perf`.
+//! Run `target/yazed-perf BASELINE [CANDIDATE]` with release binaries.
+//! Use `target/yazed-perf --editor BUILD [BUILD]` for builds with the native editor.
 //! Use `--editor-c` to exercise syntax highlighting with a C source file.
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -61,7 +61,7 @@ unsafe extern "C" {
 fn main() -> Result<()> {
 	let mut args = env::args_os().skip(1).peekable();
 	let editor = args.next_if(|arg| arg == "--editor" || arg == "--editor-c");
-	let usage = "Usage: yazi-perf [--editor | --editor-c] BASELINE [CANDIDATE]";
+	let usage = "Usage: yazed-perf [--editor | --editor-c] BASELINE [CANDIDATE]";
 	let baseline = fs::canonicalize(args.next().ok_or(usage)?)?;
 	let candidate = args.next().map(fs::canonicalize).transpose()?;
 	if args.next().is_some() {
@@ -327,7 +327,7 @@ impl TempDir {
 	fn new() -> Result<Self> {
 		let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 		let path =
-			fs::canonicalize(env::temp_dir())?.join(format!("yazi-perf-{}-{now}", process::id()));
+			fs::canonicalize(env::temp_dir())?.join(format!("yazed-perf-{}-{now}", process::id()));
 		DirBuilder::new().mode(0o700).create(&path)?;
 		Ok(Self(path))
 	}
@@ -485,12 +485,12 @@ impl Terminal {
 				return if status.success() {
 					Ok(())
 				} else {
-					Err(format!("Yazi exited with {status}").into())
+					Err(format!("Editor exited with {status}").into())
 				};
 			}
 			thread::sleep(Duration::from_millis(10));
 		}
-		Err("Yazi did not exit after q".into())
+		Err("Editor did not exit after q".into())
 	}
 }
 

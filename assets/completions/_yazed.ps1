@@ -1,4 +1,4 @@
-Register-ArgumentCompleter -Native -CommandName yazi -ScriptBlock {
+Register-ArgumentCompleter -Native -CommandName yazed -ScriptBlock {
 	param($wordToComplete, $commandAst, $cursorPosition)
 
 	$words = @(
@@ -9,7 +9,7 @@ Register-ArgumentCompleter -Native -CommandName yazi -ScriptBlock {
 		if ($wordToComplete -eq '') { '' }
 	)
 
-	foreach ($cand in (& yazi --completion=powershell -- @words)) {
+	foreach ($cand in (& yazed --completion=powershell -- @words)) {
 		$cand, $help = $cand.Split("`t", 2)
 		if (-not $help) { $help = $cand }
 		$text = "'" + $cand.Replace("'", "''") + "'"
