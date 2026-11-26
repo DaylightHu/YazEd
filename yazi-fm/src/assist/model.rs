@@ -123,8 +123,21 @@ pub(super) fn in_call(source: &AssistSource) -> bool {
 pub(super) fn items(value: Value, source: &AssistSource, encoding: Encoding) -> Vec<AssistItem> {
 	let entries = value.as_array().or_else(|| value["items"].as_array());
 	let defaults = &value["itemDefaults"];
+	let typed = source.text.slice(prefix(source)).to_string();
+	let mut candidates: Vec<_> = entries
+		.into_iter()
+		.flatten()
+		.filter_map(|item| {
+			let label = item["label"].as_str()?;
+			let filter = item["filterText"].as_str().unwrap_or(label).trim_start();
+			let score = match_score(filter, &typed)?;
+			let order = item["sortText"].as_str().unwrap_or(label);
+			Some((score, order, item))
+		})
+		.collect();
+	candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
 	let mut items = Vec::new();
-	for item in entries.into_iter().flatten().take(512) {
+	for (_, _, item) in candidates {
 		if items.len() >= 80 {
 			break;
 		}
@@ -182,6 +195,19 @@ pub(super) fn items(value: Value, source: &AssistSource, encoding: Encoding) -> 
 		items.push(AssistItem { label: clean(label, 200), detail: clean(detail, 500), edits });
 	}
 	items
+}
+
+fn match_score(candidate: &str, typed: &str) -> Option<u8> {
+	if candidate.starts_with(typed) {
+		return Some(0);
+	}
+	let candidate = candidate.to_lowercase();
+	let typed = typed.to_lowercase();
+	if candidate.starts_with(&typed) {
+		return Some(1);
+	}
+	let mut chars = candidate.chars();
+	typed.chars().all(|wanted| chars.by_ref().any(|c| c == wanted)).then_some(2)
 }
 
 pub(super) fn signature(value: Value) -> Option<AssistSignature> {
@@ -289,6 +315,47 @@ mod tests {
 		assert_eq!(view.line(0).to_string(), "TCSANOW");
 		assert!(view.undo());
 		assert_eq!(view.line(0).to_string(), "TCSA");
+	}
+
+	#[test]
+	fn unfiltered_results_match_prefix_before_limiting() {
+		let mut view = view("file.writ");
+		let source = view.assist_source().unwrap();
+		let mut entries: Vec<_> =
+			(0..600).map(|i| json!({"label": format!("unrelated_{i}")})).collect();
+		entries.extend([
+			json!({"label":"writevAll", "sortText":"2"}),
+			json!({"label":"writeStreamingAll", "sortText":"1"}),
+			json!({"label":"other", "filterText":"unrelated"}),
+		]);
+		let results = items(json!(entries), &source, Encoding::Utf16);
+		assert_eq!(
+			results.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+			["writeStreamingAll", "writevAll"]
+		);
+		view.assist.as_mut().unwrap().items = results;
+		assert!(view.assist_accept());
+		assert_eq!(view.line(0).to_string(), "file.writeStreamingAll");
+	}
+
+	#[test]
+	fn filter_text_and_fuzzy_matching_rank_exact_prefix_first() {
+		let mut view = view("writ");
+		let source = view.assist_source().unwrap();
+		let results = items(
+			json!([
+				{"label":"fuzzy", "filterText":"w_r_i_t", "sortText":"0"},
+				{"label":"case", "filterText":"WRITER", "sortText":"0"},
+				{"label":"exact", "filterText":"writeStreamingAll", "sortText":"9"},
+				{"label":"writeWrong", "filterText":"something_else"}
+			]),
+			&source,
+			Encoding::Utf16,
+		);
+		assert_eq!(
+			results.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+			["exact", "case", "fuzzy"]
+		);
 	}
 
 	#[test]
