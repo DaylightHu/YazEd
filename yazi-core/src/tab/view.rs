@@ -21,6 +21,7 @@ pub struct View {
 	pub stamp:   Option<FileStamp>,
 	pub assist:  Option<Box<ViewAssist>>,
 	assist_revision: u64,
+	count:           Option<usize>,
 
 	text:    Rope,
 	bom:     bool,
@@ -122,6 +123,7 @@ impl View {
 			stamp: None,
 			assist: None,
 			assist_revision: 0,
+			count: None,
 			text,
 			bom,
 			crlf,
@@ -172,7 +174,20 @@ impl View {
 
 	pub fn newline(&self) -> &'static str { if self.crlf { "\r\n" } else { "\n" } }
 
+	pub fn pending_count(&self) -> Option<usize> { self.count }
+
+	pub fn push_count(&mut self, digit: usize) {
+		self.count = Some(
+			self.count.unwrap_or_default().saturating_mul(10).saturating_add(digit).min(999_999),
+		);
+	}
+
+	pub fn take_count(&mut self) -> usize { self.count.take().unwrap_or(1) }
+
+	pub fn clear_count(&mut self) -> bool { self.count.take().is_some() }
+
 	pub fn enter_insert(&mut self, after: bool) {
+		self.count = None;
 		if after {
 			let line = self.cursor_line();
 			let end = self.text.line_to_char(line) + self.line(line).len_chars();
@@ -207,6 +222,111 @@ impl View {
 		}
 		self.replace(self.cursor..self.cursor, text);
 		true
+	}
+
+	pub fn insert_newline(&mut self) -> bool {
+		let row = self.cursor_line();
+		let start = self.text.line_to_char(row);
+		let before = self.text.slice(start..self.cursor).to_string();
+		let indent = self.current_indent();
+		let (tabs, width) = self.indent_style();
+		let opener = before.trim_end().chars().next_back();
+		let closer = self.text.get_char(self.cursor);
+		let split_pair = matches!(
+			(opener, closer),
+			(Some('{'), Some('}')) | (Some('['), Some(']')) | (Some('('), Some(')'))
+		);
+		let increase = matches!(opener, Some('{' | '[' | '('));
+		let mut first = String::from(self.newline());
+		first.push_str(&indent);
+		if increase {
+			if tabs {
+				first.push('\t');
+			} else {
+				first.extend(std::iter::repeat_n(' ', width));
+			}
+		}
+		let cursor = self.cursor + first.chars().count();
+		let mut inserted = first;
+		if split_pair {
+			inserted.push_str(self.newline());
+			inserted.push_str(&indent);
+		}
+		self.replace(self.cursor..self.cursor, &inserted);
+		if split_pair {
+			self.set_cursor(cursor);
+		}
+		true
+	}
+
+	pub fn insert_indent(&mut self) -> bool {
+		let (tabs, width) = self.indent_style();
+		if tabs {
+			self.type_text("\t")
+		} else if width == 2 {
+			self.type_text("  ")
+		} else {
+			self.type_text("    ")
+		}
+	}
+
+	pub fn smart_backspace(&mut self) -> bool {
+		let row = self.cursor_line();
+		let start = self.text.line_to_char(row);
+		let prefix = self.text.slice(start..self.cursor);
+		if prefix.len_chars() > 0 && prefix.chars().all(|c| matches!(c, ' ' | '\t')) {
+			let remove = if prefix.char(prefix.len_chars() - 1) == '\t' {
+				1
+			} else {
+				let (_, width) = self.indent_style();
+				let spaces = prefix.to_string().bytes().rev().take_while(|b| *b == b' ').count();
+				(spaces.saturating_sub(1) % width) + 1
+			};
+			self.replace(self.cursor - remove..self.cursor, "");
+			return true;
+		}
+		self.delete(true)
+	}
+
+	pub fn type_closer(&mut self, closer: char) -> bool {
+		let row = self.cursor_line();
+		let start = self.text.line_to_char(row);
+		let prefix = self.text.slice(start..self.cursor);
+		if prefix.len_chars() > 0 && prefix.chars().all(|c| matches!(c, ' ' | '\t')) {
+			let remove = if prefix.char(prefix.len_chars() - 1) == '\t' {
+				1
+			} else {
+				let (_, width) = self.indent_style();
+				prefix.to_string().bytes().rev().take_while(|b| *b == b' ').count().min(width)
+			};
+			self.replace(self.cursor - remove..self.cursor, "");
+		}
+		let mut bytes = [0; 4];
+		self.type_text(closer.encode_utf8(&mut bytes))
+	}
+
+	fn current_indent(&self) -> String {
+		self.line(self.cursor_line()).chars().take_while(|c| matches!(c, ' ' | '\t')).collect()
+	}
+
+	fn indent_style(&self) -> (bool, usize) {
+		let row = self.cursor_line();
+		let mut min_spaces = usize::MAX;
+		for row in row.saturating_sub(99)..=row {
+			let line = self.line(row);
+			let mut spaces = 0;
+			for c in line.chars() {
+				match c {
+					'\t' => return (true, 1),
+					' ' => spaces += 1,
+					_ => break,
+				}
+			}
+			if spaces > 0 {
+				min_spaces = min_spaces.min(spaces);
+			}
+		}
+		(false, if min_spaces == 2 { 2 } else { 4 })
 	}
 
 	pub fn delete(&mut self, backward: bool) -> bool {
@@ -412,6 +532,16 @@ impl View {
 		self.update_column();
 	}
 
+	pub fn horizontal_count(&mut self, backward: bool, count: usize) {
+		for _ in 0..count {
+			let before = self.cursor;
+			self.horizontal(backward);
+			if self.cursor == before {
+				break;
+			}
+		}
+	}
+
 	pub fn line_edge(&mut self, end: bool) {
 		self.end_change();
 		let line = self.cursor_line();
@@ -444,7 +574,7 @@ impl View {
 		self.clear_search_match();
 	}
 
-	fn cursor_line(&self) -> usize { self.text.char_to_line(self.cursor) }
+	pub fn cursor_line(&self) -> usize { self.text.char_to_line(self.cursor) }
 
 	fn set_cursor(&mut self, cursor: usize) {
 		self.cursor = cursor;
@@ -547,7 +677,16 @@ impl View {
 		(self.top, self.left) = self.viewport(width, height);
 	}
 
+	pub fn gutter_width(&self, width: usize) -> usize {
+		if width < 3 {
+			return 0;
+		}
+		let digits = self.line_count().max(1).ilog10() as usize + 1;
+		(digits + 1).min(width - 1)
+	}
+
 	pub fn viewport(&self, width: usize, height: usize) -> (usize, usize) {
+		let width = width.saturating_sub(self.gutter_width(width)).max(1);
 		let line = self.cursor_line();
 		let top = self
 			.top
@@ -570,9 +709,10 @@ impl View {
 		if area.width == 0 || area.height < 2 {
 			return None;
 		}
+		let gutter = self.gutter_width(area.width as usize);
 		let (top, left) = self.viewport(area.width as usize, area.height as usize - 1);
 		Some(Position {
-			x: area.x + (self.column - left) as u16,
+			x: area.x + gutter as u16 + (self.column - left) as u16,
 			y: area.y + (self.cursor_line() - top) as u16,
 		})
 	}

@@ -156,12 +156,16 @@ impl View {
 		}
 
 		if matches!(action.name.as_ref(), "escape" | "close") {
+			let cleared_count = view.clear_count();
 			if view.cancel_visual() {
 				succ!(render!());
 			}
 			if view.insert {
 				view.end_change();
 				view.insert = false;
+				succ!(render!());
+			}
+			if cleared_count {
 				succ!(render!());
 			}
 			if action.name == "escape" || view.protect() {
@@ -171,7 +175,19 @@ impl View {
 		}
 
 		let height = LAYOUT.get().view.height.saturating_sub(1).max(1) as isize;
+		if !matches!(action.name.as_ref(), "count" | "left" | "right" | "up" | "down") {
+			view.clear_count();
+		}
 		match action.name.as_ref() {
+			"count" if !view.insert => {
+				let digit = action.str(0).parse::<usize>().unwrap_or_default().min(9);
+				if digit == 0 && view.pending_count().is_none() {
+					view.line_edge(false);
+				} else {
+					view.push_count(digit);
+				}
+				succ!(render!());
+			}
 			"repeat_search" if !view.insert => {
 				if let Some(found) = view.repeat_search(action.bool("reverse")) {
 					Self::search_result(view, found);
@@ -214,10 +230,22 @@ impl View {
 				let changed = view.delete(false);
 				succ!(Self::redraw(view, changed));
 			}
-			"left" => view.horizontal(true),
-			"right" => view.horizontal(false),
-			"up" => view.vertical(-1),
-			"down" => view.vertical(1),
+			"left" => {
+				let count = view.take_count();
+				view.horizontal_count(true, count);
+			}
+			"right" => {
+				let count = view.take_count();
+				view.horizontal_count(false, count);
+			}
+			"up" => {
+				let count = view.take_count().min(isize::MAX as usize) as isize;
+				view.vertical(-count);
+			}
+			"down" => {
+				let count = view.take_count().min(isize::MAX as usize) as isize;
+				view.vertical(count);
+			}
 			"page_up" => view.vertical(-height),
 			"page_down" => view.vertical(height),
 			"home" => view.line_edge(false),
@@ -236,14 +264,22 @@ impl View {
 
 		let mut bytes = [0; 4];
 		let changed = if key.modifiers.is_literal() && key.code == KeyCode::Backspace {
-			!view.saving && view.delete(true)
+			!view.saving && view.smart_backspace()
 		} else if key.modifiers.is_literal() && key.code == KeyCode::Enter {
-			!view.saving && view.type_text(view.newline())
+			!view.saving && view.insert_newline()
 		} else if key.modifiers.is_literal() && key.code == KeyCode::Tab {
-			!view.saving && view.type_text("\t")
+			!view.saving && view.insert_indent()
 		} else if let Some(text) = key.text(&mut bytes) {
+			let mut chars = text.chars();
+			let single = chars.next().filter(|_| chars.next().is_none());
 			!view.saving
-				&& if text.contains(char::is_control) { view.paste(text) } else { view.type_text(text) }
+				&& if text.contains(char::is_control) {
+					view.paste(text)
+				} else if let Some(closer @ (')' | ']' | '}')) = single {
+					view.type_closer(closer)
+				} else {
+					view.type_text(text)
+				}
 		} else {
 			return false;
 		};
@@ -524,6 +560,11 @@ impl View {
 		let status_y = area.bottom() - 1;
 		let marker = if view.dirty() { " * | " } else { " | " };
 		let (x, _) = buf.set_stringn(area.x, status_y, mode, area.width as usize, mode_style);
+		let (x, _) = if let Some(count) = view.pending_count() {
+			buf.set_stringn(x, status_y, format!(" {count} "), (area.right() - x) as usize, mode_style)
+		} else {
+			(x, status_y)
+		};
 		let (x, _) = buf.set_stringn(x, status_y, marker, (area.right() - x) as usize, style);
 		if let Some(name) = view.url.name() {
 			let (end, _) = buf.set_stringn(x, status_y, name.to_string_lossy(), (area.right() - x) as usize, style);
@@ -536,14 +577,28 @@ impl View {
 			}
 		}
 
-		let width = area.width as usize;
+		let full_width = area.width as usize;
+		let gutter = view.gutter_width(full_width);
+		let width = full_width.saturating_sub(gutter).max(1);
+		let text_x = area.x + gutter as u16;
 		let height = area.height as usize - 1;
-		let (top, left) = view.viewport(width, height);
+		let (top, left) = view.viewport(full_width, height);
 		let rows = top..(top + height).min(view.line_count());
 		view.prepare_syntax(rows.clone(), || emit!(Call(relay!(app:view_syntax_ready))));
 		let visual = view.visual_span();
 		let visual_style = THEME.input.selected.get().0;
+		let cursor_row = view.cursor_line();
+		let digits = gutter.saturating_sub(1);
 		for (y, row) in (area.y..status_y).zip(rows) {
+			if gutter > 0 {
+				let number = if row == cursor_row { row + 1 } else { row.abs_diff(cursor_row) };
+				let number_style = if row == cursor_row {
+					mode_style.add_modifier(Modifier::BOLD)
+				} else {
+					style.add_modifier(Modifier::DIM)
+				};
+				buf.set_stringn(area.x, y, format!("{number:>digits$} "), gutter, number_style);
+			}
 			let mut col = 0;
 			let mut byte = 0;
 			let highlight = view.match_on_line(row);
@@ -558,7 +613,7 @@ impl View {
 			};
 			let line = view.line(row);
 			if whole_line {
-				buf.set_style(Rect::new(area.x, y, area.width, 1), visual_style);
+				buf.set_style(Rect::new(text_x, y, width as u16, 1), visual_style);
 			}
 			for g in graphemes(line) {
 				let start = col;
@@ -586,7 +641,7 @@ impl View {
 					cell_style = cell_style.patch(visual_style);
 				}
 
-				let x = area.x + (start - left) as u16;
+				let x = text_x + (start - left) as u16;
 				if g.char(0) != '\t' {
 					buf.set_stringn(x, y, grapheme_text(g), col - start, cell_style);
 				} else if cell_style != style {
@@ -597,7 +652,7 @@ impl View {
 				&& selection.as_ref().is_some_and(|range| range.contains(&line.len_bytes()))
 			{
 				// Show an inclusive selection of a line ending, even on an empty row.
-				buf.set_style(Rect::new(area.x + (col - left) as u16, y, 1, 1), visual_style);
+				buf.set_style(Rect::new(text_x + (col - left) as u16, y, 1, 1), visual_style);
 			}
 		}
 		crate::assist::Assist::render(view, area, buf);
