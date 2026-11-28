@@ -700,6 +700,79 @@ impl View {
 		self.find(self.search.as_ref()?.backward ^ reverse, true)
 	}
 
+	/// Return the UTF-8 byte offsets of the bracket at the cursor and its match.
+	///
+	/// The character immediately before the cursor is also considered so that a
+	/// pair is highlighted as soon as its opening or closing bracket is typed.
+	pub fn matching_bracket_bytes(&self, limit: usize) -> Option<(usize, usize)> {
+		let (at, mate) = self.matching_bracket(limit)?;
+		Some((self.text.char_to_byte(at), self.text.char_to_byte(mate)))
+	}
+
+	pub fn jump_matching_bracket(&mut self) -> bool {
+		let Some((_, mate)) = self.matching_bracket(usize::MAX) else { return false };
+		self.end_change();
+		self.set_cursor(mate);
+		true
+	}
+
+	fn matching_bracket(&self, limit: usize) -> Option<(usize, usize)> {
+		let len = self.text.len_chars();
+		let candidate = |index: usize| -> Option<(usize, char)> {
+			(index < len)
+				.then(|| (index, self.text.char(index)))
+				.filter(|(_, c)| matches!(c, '(' | ')' | '[' | ']' | '{' | '}'))
+		};
+		let (at, bracket) = candidate(self.cursor)
+			.or_else(|| self.cursor.checked_sub(1).and_then(candidate))?;
+		let (open, close, forward) = match bracket {
+			'(' => ('(', ')', true),
+			'[' => ('[', ']', true),
+			'{' => ('{', '}', true),
+			')' => ('(', ')', false),
+			']' => ('[', ']', false),
+			'}' => ('{', '}', false),
+			_ => return None,
+		};
+
+		let mate = if forward {
+			let mut depth = 0usize;
+			let end = at.saturating_add(limit).saturating_add(1).min(len);
+			let mut found = None;
+			for index in at..end {
+				let c = self.text.char(index);
+				if c == open {
+					depth += 1;
+				} else if c == close {
+					depth -= 1;
+					if depth == 0 {
+						found = Some(index);
+						break;
+					}
+				}
+			}
+			found?
+		} else {
+			let mut depth = 0usize;
+			let start = at.saturating_sub(limit);
+			let mut found = None;
+			for index in (start..=at).rev() {
+				let c = self.text.char(index);
+				if c == close {
+					depth += 1;
+				} else if c == open {
+					depth -= 1;
+					if depth == 0 {
+						found = Some(index);
+						break;
+					}
+				}
+			}
+			found?
+		};
+		Some((at, mate))
+	}
+
 	fn find(&mut self, backward: bool, repeat: bool) -> Option<bool> {
 		let search = self.search.as_ref()?;
 		let from = search

@@ -188,6 +188,10 @@ impl View {
 				}
 				succ!(render!());
 			}
+			"match_bracket" if !view.insert => {
+				let changed = view.jump_matching_bracket();
+				succ!(Self::redraw(view, changed));
+			}
 			"repeat_search" if !view.insert => {
 				if let Some(found) = view.repeat_search(action.bool("reverse")) {
 					Self::search_result(view, found);
@@ -605,6 +609,7 @@ impl View {
 		let visual_style = THEME.input.selected.get().0;
 		let cursor_row = view.cursor_line();
 		let digits = gutter.saturating_sub(1);
+		let bracket_match = view.matching_bracket_bytes(20_000);
 		for (y, row) in (area.y..status_y).zip(rows) {
 			if gutter > 0 {
 				let number = if row == cursor_row { row + 1 } else { row.abs_diff(cursor_row) };
@@ -617,6 +622,7 @@ impl View {
 			}
 			let mut col = 0;
 			let mut byte = 0;
+			let line_byte = view.line_byte(row);
 			let highlight = view.match_on_line(row);
 			let mut syntax = view.syntax_styles(row).iter().peekable();
 			let (whole_line, selection) = match &visual {
@@ -650,6 +656,12 @@ impl View {
 				let mut cell_style = syntax.peek().map_or(style, |(_, style)| *style);
 				if highlight.as_ref().is_some_and(|range| start_byte < range.end && byte > range.start) {
 					cell_style = cell_style.patch(THEME.mgr.find_keyword.get().0);
+				}
+				let global_byte = line_byte + start_byte;
+				if bracket_match.is_some_and(|(at, mate)| global_byte == at || global_byte == mate) {
+					cell_style = cell_style.patch(
+						THEME.mgr.find_keyword.get().0.add_modifier(Modifier::BOLD),
+					);
 				}
 				if whole_line
 					|| selection.as_ref().is_some_and(|range| start_byte < range.end && byte > range.start)
