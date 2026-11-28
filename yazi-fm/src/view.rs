@@ -258,7 +258,21 @@ impl View {
 	}
 
 	pub(super) fn insert_key(view: &mut DocumentView, key: &KeyEvent) -> bool {
-		if !view.insert || key.kind == KeyEventKind::Release {
+		if key.kind == KeyEventKind::Release {
+			return false;
+		}
+		if !view.saving && view.visual_mode() == Some(true) && key.modifiers.is_literal() {
+			let changed = match key.code {
+				KeyCode::Tab => Some(view.indent_visual(false)),
+				KeyCode::Backspace => Some(view.indent_visual(true)),
+				_ => None,
+			};
+			if let Some(changed) = changed {
+				Self::redraw(view, changed);
+				return true;
+			}
+		}
+		if !view.insert {
 			return false;
 		}
 
