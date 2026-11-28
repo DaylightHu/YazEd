@@ -45,6 +45,7 @@ pub struct View {
 struct ViewSelection {
 	anchor:   usize,
 	linewise: bool,
+	indent:   Option<usize>,
 }
 
 pub enum ViewSelectionSpan {
@@ -374,7 +375,7 @@ impl View {
 		self.visual = match self.visual {
 			Some(v) if v.linewise == linewise => None,
 			Some(v) => Some(ViewSelection { linewise, ..v }),
-			None => Some(ViewSelection { anchor: self.cursor, linewise }),
+			None => Some(ViewSelection { anchor: self.cursor, linewise, indent: None }),
 		};
 	}
 
@@ -386,6 +387,79 @@ impl View {
 		self.goal = None;
 		self.update_column();
 		true
+	}
+
+	pub fn indent_visual(&mut self, unindent: bool) -> bool {
+		let Some(visual) = self.visual.filter(|v| v.linewise) else { return false };
+		let anchor_row = self.text.char_to_line(visual.anchor);
+		let cursor_row = self.cursor_line();
+		let first = anchor_row.min(cursor_row);
+		let last = anchor_row.max(cursor_row);
+		let anchor_offset = visual.anchor - self.text.line_to_char(anchor_row);
+		let cursor_offset = self.cursor - self.text.line_to_char(cursor_row);
+		let indent = visual.indent.unwrap_or_else(|| self.visual_indent_style(first, last));
+		let (unit, width) = match indent {
+			0 => ("\t", 4),
+			2 => ("  ", 2),
+			_ => ("    ", 4),
+		};
+		let mut removed = Vec::with_capacity(last - first + 1);
+		let mut replacement = String::new();
+
+		for row in first..=last {
+			let start = self.text.line_to_char(row);
+			let end = self.text.line_to_char(row + 1);
+			let line = self.text.slice(start..end).to_string();
+			if unindent {
+				let count = if line.starts_with('\t') {
+					1
+				} else {
+					line.as_bytes().iter().take(width).take_while(|b| **b == b' ').count()
+				};
+				removed.push(count);
+				replacement.push_str(&line[count..]);
+			} else {
+				removed.push(0);
+				replacement.push_str(unit);
+				replacement.push_str(&line);
+			}
+		}
+
+		if unindent && removed.iter().all(|count| *count == 0) {
+			return false;
+		}
+		let range = self.text.line_to_char(first)..self.text.line_to_char(last + 1);
+		self.end_change();
+		self.replace(range, &replacement);
+
+		let offset = |row: usize, old: usize, view: &Self| {
+			let changed = removed[row - first];
+			let new = if unindent { old.saturating_sub(changed) } else { old + unit.len() };
+			new.min(view.line(row).len_chars())
+		};
+		let anchor = self.text.line_to_char(anchor_row) + offset(anchor_row, anchor_offset, self);
+		let cursor = self.text.line_to_char(cursor_row) + offset(cursor_row, cursor_offset, self);
+		self.visual = Some(ViewSelection { anchor, linewise: true, indent: Some(indent) });
+		self.set_cursor(cursor);
+		true
+	}
+
+	fn visual_indent_style(&self, first: usize, last: usize) -> usize {
+		let mut min_spaces = usize::MAX;
+		for row in first.saturating_sub(99)..=last {
+			let mut spaces = 0;
+			for c in self.line(row).chars() {
+				match c {
+					'\t' => return 0,
+					' ' => spaces += 1,
+					_ => break,
+				}
+			}
+			if spaces > 0 {
+				min_spaces = min_spaces.min(spaces);
+			}
+		}
+		if min_spaces == 2 { 2 } else { 4 }
 	}
 
 	pub fn visual_span(&self) -> Option<ViewSelectionSpan> {
