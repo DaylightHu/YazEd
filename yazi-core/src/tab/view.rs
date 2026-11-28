@@ -224,6 +224,19 @@ impl View {
 		true
 	}
 
+	pub fn type_opener(&mut self, opener: char) -> bool {
+		let pair = match opener {
+			'(' => "()",
+			'[' => "[]",
+			'{' => "{}",
+			_ => return false,
+		};
+		let cursor = self.cursor;
+		self.replace(cursor..cursor, pair);
+		self.set_cursor(cursor + 1);
+		true
+	}
+
 	pub fn insert_newline(&mut self) -> bool {
 		let row = self.cursor_line();
 		let start = self.text.line_to_char(row);
@@ -271,6 +284,17 @@ impl View {
 	}
 
 	pub fn smart_backspace(&mut self) -> bool {
+		if self.cursor > 0 {
+			let before = self.text.get_char(self.cursor - 1);
+			let after = self.text.get_char(self.cursor);
+			if matches!(
+				(before, after),
+				(Some('('), Some(')')) | (Some('['), Some(']')) | (Some('{'), Some('}'))
+			) {
+				self.replace(self.cursor - 1..self.cursor + 1, "");
+				return true;
+			}
+		}
 		let row = self.cursor_line();
 		let start = self.text.line_to_char(row);
 		let prefix = self.text.slice(start..self.cursor);
@@ -289,6 +313,10 @@ impl View {
 	}
 
 	pub fn type_closer(&mut self, closer: char) -> bool {
+		if self.text.get_char(self.cursor) == Some(closer) {
+			self.set_cursor(self.cursor + 1);
+			return true;
+		}
 		let row = self.cursor_line();
 		let start = self.text.line_to_char(row);
 		let prefix = self.text.slice(start..self.cursor);

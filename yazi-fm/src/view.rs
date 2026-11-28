@@ -275,6 +275,8 @@ impl View {
 			!view.saving
 				&& if text.contains(char::is_control) {
 					view.paste(text)
+				} else if let Some(opener @ ('(' | '[' | '{')) = single {
+					view.type_opener(opener)
 				} else if let Some(closer @ (')' | ']' | '}')) = single {
 					view.type_closer(closer)
 				} else {
