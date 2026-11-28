@@ -197,6 +197,7 @@ keymap = [
 	{ on = "?",          run = "search --backward", desc = "Search the file backward" },
 	{ on = "n",          run = "repeat_search", desc = "Repeat the last search" },
 	{ on = "N",          run = "repeat_search --reverse", desc = "Repeat the last search in reverse" },
+	{ on = "%",          run = "match_bracket", desc = "Jump to the matching bracket" },
 	{ on = "i",          run = "insert",    desc = "Enter insert mode" },
 	{ on = "a",          run = "insert --after", desc = "Insert after the cursor" },
 	{ on = "u",          run = "undo",      desc = "Undo the last change" },
